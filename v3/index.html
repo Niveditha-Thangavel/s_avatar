@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Realistic 3D Talking Head - Client-Side TTS & Viseme Lip-Sync</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/index.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Loading & Caching Screen -->
+      <div id="model-loader" class="loader-overlay hidden">
+        <div class="loader-card">
+          <div class="loader-title">Initializing Kokoro.js</div>
+          <p class="loader-subtitle">Loading the 82M Text-to-Speech ONNX Model directly in your browser.</p>
+          
+          <div class="progress-container">
+            <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+          </div>
+          <div id="progress-text" class="progress-text">Connecting to Hugging Face...</div>
+          
+          <div id="file-progress-list" class="file-progress-list">
+            <!-- Individual file download states will appear here -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Layout -->
+      <main class="app-container">
+        <!-- Left Pane: 3D WebGL Canvas Viewport -->
+        <section class="viewport-section">
+          <div id="canvas-container" class="canvas-container">
+            <!-- Three.js Canvas gets injected here -->
+          </div>
+
+          <!-- Stats HUD Overlay -->
+          <div class="stats-hud">
+            <div class="hud-item">FPS: <span id="hud-fps">0</span></div>
+            <div class="hud-item">Status: <span id="hud-status" class="status-badge idle">Idle</span></div>
+            <div class="hud-item">Active Phoneme: <span id="hud-phoneme">-</span></div>
+          </div>
+        </section>
+
+        <!-- Right Pane: Controls Sidebar -->
+        <section class="controls-sidebar">
+          <header class="app-header">
+            <div class="logo">
+              <span class="logo-icon">✨</span>
+              <h1>3D Digital Human</h1>
+            </div>
+            <p class="header-desc">Rigged 3D avatar with ARKit/Oculus blendshapes and local ONNX TTS.</p>
+          </header>
+
+          <!-- TTS Input Section -->
+          <div class="control-group">
+            <h3>Text to Speech</h3>
+            <textarea id="text-input" placeholder="Type what you want the avatar to say here... (e.g. Hello! I am running entirely in your browser using Kokoro TTS and WebGL.)">Hello there! I am a real-time 3D talking avatar, running entirely in your browser. Everything you see and hear is generated right now on your machine with smooth viseme morph targets, realistic eye blinking, sways, and head movement.</textarea>
+            
+            <div class="row">
+              <button id="btn-speak" class="btn btn-primary">
+                <span class="btn-icon">🔊</span> Speak
+              </button>
+              <button id="btn-stop" class="btn btn-secondary" disabled>
+                <span class="btn-icon">⏹️</span> Stop
+              </button>
+            </div>
+          </div>
+
+          <!-- Voice & Model Settings -->
+          <div class="control-group">
+            <h3>Voice Settings</h3>
+            <div class="input-row">
+              <label for="voice-select">Voice</label>
+              <select id="voice-select">
+                <option value="af_heart" selected>af_heart (Female - US)</option>
+                <option value="af_sky">af_sky (Female - US)</option>
+                <option value="af_bella">af_bella (Female - US)</option>
+                <option value="af_nicole">af_nicole (Female - US)</option>
+                <option value="am_adam">am_adam (Male - US)</option>
+                <option value="am_michael">am_michael (Male - US)</option>
+              </select>
+            </div>
+
+            <div class="row">
+              <div class="input-row half">
+                <label for="speed-range">Speed: <span id="speed-val">1.0</span>x</label>
+                <input type="range" id="speed-range" min="0.5" max="2.0" step="0.1" value="1.0" />
+              </div>
+              <div class="input-row half">
+                <label for="volume-range">Volume: <span id="volume-val">80</span>%</label>
+                <input type="range" id="volume-range" min="0" max="100" step="5" value="80" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Avatar Expression / Emotion -->
+          <div class="control-group">
+            <h3>Avatar Expression</h3>
+            <div class="input-row">
+              <label for="emotion-select">Emotion</label>
+              <select id="emotion-select">
+                <option value="neutral" selected>😐 Neutral</option>
+                <option value="happy">😊 Happy</option>
+                <option value="sad">😢 Sad</option>
+                <option value="angry">😠 Angry</option>
+                <option value="surprised">😲 Surprised</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Avatar & Image Upload Section -->
+          <div class="control-group">
+            <h3>Avatar 3D Model</h3>
+            <p class="settings-hint">Upload a custom rigged avatar GLB/GLTF model (e.g. Ready Player Me) with ARKit blendshapes.</p>
+            <div class="row">
+              <div class="upload-wrapper">
+                <button class="btn btn-secondary file-upload-btn">
+                  <span>📁</span> Upload GLB Model
+                </button>
+                <input type="file" id="image-upload" accept=".glb,.gltf" />
+              </div>
+              <button id="btn-reset-avatar" class="btn btn-secondary">
+                <span>🔄</span> Reset Default
+              </button>
+            </div>
+          </div>
+
+          <!-- Model settings (quantization selection) -->
+          <details class="control-group config-details" open>
+            <summary>
+              <span class="details-title">⚙️ Model Settings</span>
+            </summary>
+            
+            <div class="details-content">
+              <div class="input-row">
+                <label for="quant-select">Quantization (dtype)</label>
+                <select id="quant-select">
+                  <option value="q4" selected>4-bit Quantized (q4) - Fastest</option>
+                  <option value="q8">8-bit Quantized (q8) - Recommended</option>
+                  <option value="fp32">32-bit Float (fp32) - Highest Quality</option>
+                </select>
+              </div>
+              <div class="input-row">
+                <label for="device-select">Processor Device</label>
+                <select id="device-select">
+                  <option value="wasm" selected>WASM (CPU WebAssembly)</option>
+                  <option value="webgpu">WebGPU (Chrome/Edge Only)</option>
+                </select>
+              </div>
+              <p class="settings-hint">Changing model parameters requires re-loading the ONNX engine (approx. 45MB - 170MB download).</p>
+              <button id="btn-apply-settings" class="btn btn-secondary">Apply & Reload Model</button>
+            </div>
+          </details>
+
+          <!-- Posture Calibration Panel -->
+          <details class="control-group config-details" open>
+            <summary>
+              <span class="details-title">🔧 Posture Calibration</span>
+            </summary>
+            
+            <div class="details-content" style="max-height: 400px; overflow-y: auto; padding-right: 5px;">
+              <p class="settings-hint">Drag sliders to adjust arm/elbow bones. The avatar will update in real time. Copy the generated code block below once satisfied.</p>
+              
+              <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 8px;">
+                <h4 style="font-size: 12px; color: #00e676; margin-bottom: 6px;">Left Upper Arm</h4>
+                <div class="input-row">
+                  <label>Roll (X): <span id="cal-la-x-val">-1.82</span></label>
+                  <input type="range" id="cal-la-x" min="-3.14" max="3.14" step="0.02" value="-1.82" />
+                </div>
+                <div class="input-row">
+                  <label>Pitch (Y): <span id="cal-la-y-val">-2.42</span></label>
+                  <input type="range" id="cal-la-y" min="-3.14" max="3.14" step="0.02" value="-2.42" />
+                </div>
+                <div class="input-row">
+                  <label>Yaw (Z): <span id="cal-la-z-val">3.14</span></label>
+                  <input type="range" id="cal-la-z" min="-3.14" max="3.14" step="0.02" value="3.14" />
+                </div>
+              </div>
+
+              <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 8px;">
+                <h4 style="font-size: 12px; color: #00e676; margin-bottom: 6px;">Right Upper Arm</h4>
+                <div class="input-row">
+                  <label>Roll (X): <span id="cal-ra-x-val">-1.82</span></label>
+                  <input type="range" id="cal-ra-x" min="-3.14" max="3.14" step="0.02" value="-1.82" />
+                </div>
+                <div class="input-row">
+                  <label>Pitch (Y): <span id="cal-ra-y-val">2.62</span></label>
+                  <input type="range" id="cal-ra-y" min="-3.14" max="3.14" step="0.02" value="2.62" />
+                </div>
+                <div class="input-row">
+                  <label>Yaw (Z): <span id="cal-ra-z-val">-3.14</span></label>
+                  <input type="range" id="cal-ra-z" min="-3.14" max="3.14" step="0.02" value="-3.14" />
+                </div>
+              </div>
+
+              <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 8px;">
+                <h4 style="font-size: 12px; color: #00e676; margin-bottom: 6px;">Left Forearm (Elbow)</h4>
+                <div class="input-row">
+                  <label>Roll (X): <span id="cal-lf-x-val">1.10</span></label>
+                  <input type="range" id="cal-lf-x" min="-3.14" max="3.14" step="0.02" value="1.10" />
+                </div>
+                <div class="input-row">
+                  <label>Pitch (Y): <span id="cal-lf-y-val">0.00</span></label>
+                  <input type="range" id="cal-lf-y" min="-3.14" max="3.14" step="0.02" value="0.00" />
+                </div>
+                <div class="input-row">
+                  <label>Yaw (Z): <span id="cal-lf-z-val">-0.20</span></label>
+                  <input type="range" id="cal-lf-z" min="-3.14" max="3.14" step="0.02" value="-0.20" />
+                </div>
+              </div>
+
+              <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 8px;">
+                <h4 style="font-size: 12px; color: #00e676; margin-bottom: 6px;">Right Forearm (Elbow)</h4>
+                <div class="input-row">
+                  <label>Roll (X): <span id="cal-rf-x-val">1.12</span></label>
+                  <input type="range" id="cal-rf-x" min="-3.14" max="3.14" step="0.02" value="1.12" />
+                </div>
+                <div class="input-row">
+                  <label>Pitch (Y): <span id="cal-rf-y-val">0.00</span></label>
+                  <input type="range" id="cal-rf-y" min="-3.14" max="3.14" step="0.02" value="0.00" />
+                </div>
+                <div class="input-row">
+                  <label>Yaw (Z): <span id="cal-rf-z-val">0.14</span></label>
+                  <input type="range" id="cal-rf-z" min="-3.14" max="3.14" step="0.02" value="0.14" />
+                </div>
+              </div>
+
+              <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 8px;">
+                <h4 style="font-size: 12px; color: #00e676; margin-bottom: 6px;">Left Hand (Wrist)</h4>
+                <div class="input-row">
+                  <label>Roll (X): <span id="cal-lh-x-val">-0.10</span></label>
+                  <input type="range" id="cal-lh-x" min="-3.14" max="3.14" step="0.02" value="-0.10" />
+                </div>
+                <div class="input-row">
+                  <label>Pitch (Y): <span id="cal-lh-y-val">1.66</span></label>
+                  <input type="range" id="cal-lh-y" min="-3.14" max="3.14" step="0.02" value="1.66" />
+                </div>
+                <div class="input-row">
+                  <label>Yaw (Z): <span id="cal-lh-z-val">0.26</span></label>
+                  <input type="range" id="cal-lh-z" min="-3.14" max="3.14" step="0.02" value="0.26" />
+                </div>
+              </div>
+
+              <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 8px;">
+                <h4 style="font-size: 12px; color: #00e676; margin-bottom: 6px;">Right Hand (Wrist)</h4>
+                <div class="input-row">
+                  <label>Roll (X): <span id="cal-rh-x-val">-0.18</span></label>
+                  <input type="range" id="cal-rh-x" min="-3.14" max="3.14" step="0.02" value="-0.18" />
+                </div>
+                <div class="input-row">
+                  <label>Pitch (Y): <span id="cal-rh-y-val">-1.66</span></label>
+                  <input type="range" id="cal-rh-y" min="-3.14" max="3.14" step="0.02" value="-1.66" />
+                </div>
+                <div class="input-row">
+                  <label>Yaw (Z): <span id="cal-rh-z-val">-0.26</span></label>
+                  <input type="range" id="cal-rh-z" min="-3.14" max="3.14" step="0.02" value="-0.26" />
+                </div>
+              </div>
+
+              <div style="margin-top: 10px;">
+                <button id="btn-reset-calibration" class="btn btn-secondary" style="width: 100%; margin-bottom: 10px;">Reset Calibration</button>
+                <label style="font-size: 11px; font-weight: 600; color: #fff;">Parameters Code Snippet:</label>
+                <pre id="cal-code-output" style="background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255,255,255,0.1); color: #00e676; padding: 8px; font-family: monospace; font-size: 10px; border-radius: 4px; overflow-x: auto; margin-top: 4px; white-space: pre-wrap; user-select: all; cursor: pointer;" title="Click to select all"></pre>
+              </div>
+            </div>
+          </details>
+
+          <!-- Footer/Info -->
+          <footer class="sidebar-footer">
+            <p>Made with 💖 using Kokoro.js and Three.js</p>
+          </footer>
+        </section>
+      </main>
+    </div>
+    
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>
