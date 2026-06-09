@@ -1,0 +1,42 @@
+# ================================================================
+# docker-compose.yml  (root of project)
+# ================================================================
+version: "3.9"
+
+services:
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: avatar_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app          # hot reload in dev
+      - model_cache:/root/.cache
+    environment:
+      - TTS_ENGINE=kokoro       # kokoro | piper | xtts
+      - VISEME_METHOD=rhubarb   # rhubarb | whisper
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: avatar_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  model_cache:
