@@ -1,0 +1,249 @@
+"""
+main.py  –  FastAPI WebSocket + HTTP server
+
+Endpoints:
+  GET  /health   – liveness check
+  POST /chat     – typed text → reply text (placeholder LLM)
+  WS   /ws/tts   – text  → streamed PCM audio (OmniVoice)
+  WS   /ws/stt   – PCM audio stream → full transcript + reply (Whisper)
+
+STT flow:
+  client streams raw Int16 PCM frames → server accumulates all frames
+  → client sends { type: "stop" } → server flushes buffer to Whisper
+  → Whisper transcribes the whole utterance at once (no custom VAD)
+  → reply text sent back over the same socket
+
+Run with:
+  uvicorn main:app --host 0.0.0.0 --port 8765 --reload
+"""
+
+import asyncio
+import json
+import logging
+import os
+import time
+import warnings
+from contextlib import asynccontextmanager
+from typing import Optional
+
+import numpy as np
+
+# Suppress noisy tokenizer / transformers warnings from OmniVoice internals
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+warnings.filterwarnings("ignore", message=".*clean_up_tokenization.*")
+warnings.filterwarnings("ignore", message=".*forced_decoder_ids.*")
+warnings.filterwarnings("ignore", message=".*SuppressTokens.*")
+warnings.filterwarnings("ignore", message=".*multilingual Whisper.*")
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from chat import get_response
+from stt_engine import AudioBuffer, get_whisper, transcribe
+from tts_engine import get_model, synthesize_stream
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Startup — warm up both models concurrently
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("[Server] Warming up models …")
+    await asyncio.gather(get_model(), get_whisper())
+    logger.info("[Server] All models ready – accepting connections")
+    yield
+    logger.info("[Server] Shutdown")
+
+
+app = FastAPI(title="Voice Avatar Server", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# HTTP endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "timestamp": time.time()}
+
+
+class ChatRequest(BaseModel):
+    text: str
+
+
+@app.post("/chat")
+async def chat_endpoint(req: ChatRequest):
+    if not req.text.strip():
+        return {"reply": ""}
+    reply = await get_response(req.text.strip())
+    return {"reply": reply}
+
+
+# ---------------------------------------------------------------------------
+# WS /ws/tts  –  text → streamed PCM audio
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/tts")
+async def ws_tts(websocket: WebSocket):
+    await websocket.accept()
+    logger.info("[TTS-WS] Connected: %s", websocket.client)
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await _send_json(websocket, {"type": "error", "message": "Invalid JSON"})
+                continue
+
+            msg_type = msg.get("type")
+
+            if msg_type == "speak":
+                text     = msg.get("text", "").strip()
+                instruct = msg.get("instruct") or None
+                speed    = float(msg.get("speed",   1.0))
+                num_step = int(msg.get("numStep", 16))
+
+                if not text:
+                    await _send_json(websocket, {"type": "error", "message": "Empty text"})
+                    continue
+
+                await _send_json(websocket, {"type": "status", "data": "generating"})
+
+                try:
+                    async for chunk in synthesize_stream(
+                        text=text,
+                        instruct=instruct,
+                        speed=speed,
+                        num_step=num_step,
+                    ):
+                        await _send_json(websocket, {
+                            "type":       "chunk",
+                            "text":       chunk["text"],
+                            "sampleRate": chunk["sample_rate"],
+                            "byteLength": len(chunk["audio"]),
+                        })
+                        await websocket.send_bytes(chunk["audio"])
+
+                    await _send_json(websocket, {"type": "status", "data": "complete"})
+
+                except Exception as exc:
+                    logger.exception("[TTS-WS] synthesis failed: %s", exc)
+                    await _send_json(websocket, {"type": "error", "message": str(exc)})
+
+            elif msg_type == "stop":
+                await _send_json(websocket, {"type": "status", "data": "stopped"})
+
+            else:
+                await _send_json(websocket, {
+                    "type": "error", "message": f"Unknown type: {msg_type}"
+                })
+
+    except WebSocketDisconnect:
+        logger.info("[TTS-WS] Disconnected: %s", websocket.client)
+    except Exception as exc:
+        logger.exception("[TTS-WS] Unexpected error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# WS /ws/stt  –  streamed audio → transcript + reply
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/stt")
+async def ws_stt(websocket: WebSocket):
+    await websocket.accept()
+    logger.info("[STT-WS] Connected: %s", websocket.client)
+
+    audio_buf = AudioBuffer()          # accumulates all PCM frames
+    language: Optional[str] = None
+
+    try:
+        while True:
+            msg = await websocket.receive()
+
+            # ── binary: raw Int16 PCM at 16 kHz mono ───────────────────────
+            if msg["type"] == "websocket.receive" and msg.get("bytes"):
+                pcm_i16 = np.frombuffer(msg["bytes"], dtype=np.int16)
+                pcm_f32 = pcm_i16.astype(np.float32) / 32768.0
+                audio_buf.push(pcm_f32)
+                # Optionally echo back buffer duration so the client can show
+                # a recording timer without any extra round-trips
+                # (comment out if the extra messages are unwanted)
+                # await _send_json(websocket, {
+                #     "type": "buffering", "duration": round(audio_buf.duration_s, 1)
+                # })
+
+            # ── text: JSON control message ──────────────────────────────────
+            elif msg["type"] == "websocket.receive" and msg.get("text"):
+                try:
+                    ctrl = json.loads(msg["text"])
+                except json.JSONDecodeError:
+                    continue
+
+                ctrl_type = ctrl.get("type")
+
+                # config — set language hint
+                if ctrl_type == "config":
+                    language = ctrl.get("language") or None
+                    logger.info("[STT-WS] Language set to: %s", language)
+                    await _send_json(websocket, {"type": "status", "data": "listening"})
+
+                # stop — flush buffer and transcribe the whole thing
+                elif ctrl_type == "stop":
+                    audio = audio_buf.flush()
+
+                    if audio is None:
+                        await _send_json(websocket, {"type": "status", "data": "stopped"})
+                        continue
+
+                    # 1. Transcribe full buffer
+                    await _send_json(websocket, {"type": "status", "data": "transcribing"})
+                    transcript = await transcribe(audio, language=language)
+
+                    if not transcript:
+                        await _send_json(websocket, {"type": "status", "data": "stopped"})
+                        continue
+
+                    # 2. Send transcript back (what the user said)
+                    await _send_json(websocket, {"type": "transcript", "text": transcript})
+
+                    # 3. Generate reply
+                    await _send_json(websocket, {"type": "status", "data": "thinking"})
+                    reply = await get_response(transcript)
+
+                    # 4. Send reply (what the avatar will say)
+                    await _send_json(websocket, {"type": "reply", "text": reply})
+                    await _send_json(websocket, {"type": "status", "data": "stopped"})
+
+                # cancel — discard buffer without transcribing
+                elif ctrl_type == "cancel":
+                    audio_buf.reset()
+                    await _send_json(websocket, {"type": "status", "data": "cancelled"})
+
+    except WebSocketDisconnect:
+        logger.info("[STT-WS] Disconnected: %s", websocket.client)
+    except Exception as exc:
+        logger.exception("[STT-WS] Unexpected error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
+
+async def _send_json(ws: WebSocket, data: dict):
+    await ws.send_text(json.dumps(data))

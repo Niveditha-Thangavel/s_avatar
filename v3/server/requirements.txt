@@ -1,0 +1,22 @@
+# ── Python server dependencies ────────────────────────────────────────────────
+# Install PyTorch FIRST, matching your hardware:
+#   NVIDIA GPU:  pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+#   Apple MPS:   pip install torch==2.5.1 torchaudio==2.5.1
+#   CPU only:    pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+# Then install the rest:
+#   pip install -r requirements.txt
+
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+python-multipart==0.0.20
+pydantic==2.11.4
+
+# TTS – OmniVoice (k2-fsa/OmniVoice)
+omnivoice==0.1.5
+soundfile==0.12.1
+
+# STT – faster-whisper (ships with its own Silero VAD v6)
+faster-whisper==1.1.1
+
+# numpy pinned for compatibility with both omnivoice and faster-whisper
+numpy==1.26.4
