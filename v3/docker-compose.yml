@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # Frontend static client application
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: voice-avatar-frontend
+    ports:
+      - "3005:3005"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  # Backend FastAPI model server
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: voice-avatar-server
+    ports:
+      - "8765:8765"
+    environment:
+      - OMNIVOICE_DEVICE=cuda:0  # Change to 'cpu' if running without GPU
+      - WHISPER_DEVICE=cuda      # Change to 'cpu' if running without GPU
+      - TOKENIZERS_PARALLELISM=false
+    # Request access to host GPU devices (required for CUDA acceleration in GCP)
+    # Note: Host must have NVIDIA Container Toolkit installed
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

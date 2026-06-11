@@ -1,0 +1,19 @@
+# Exclude local dependency folders
+node_modules/
+server/venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Exclude local build artifacts
+dist/
+
+# Exclude local environment configs and metadata
+.git/
+.gitignore
+.DS_Store
+.vscode/
+
+# Exclude local test configuration
+docker-compose.local.yml

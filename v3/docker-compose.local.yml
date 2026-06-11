@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  # Frontend static client application
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: voice-avatar-frontend-local
+    ports:
+      - "3005:3005"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  # Backend FastAPI model server configured for local CPU execution
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: voice-avatar-server-local
+    ports:
+      - "8765:8765"
+    environment:
+      - OMNIVOICE_DEVICE=cpu      # Force CPU inference for local testing on Mac
+      - WHISPER_DEVICE=cpu        # Force CPU inference for local testing on Mac
+      - TOKENIZERS_PARALLELISM=false
+    # GPU reservations are omitted here for compatibility with Mac
+    restart: unless-stopped

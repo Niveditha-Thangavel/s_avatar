@@ -1,0 +1,47 @@
+# Use the official PyTorch base image with CUDA 12.4 and cuDNN 9 support
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Force Python logs to write directly to stdout (useful for container logs)
+ENV PYTHONUNBUFFERED=1
+
+# Expose default environment variables to enable GPU usage for models
+ENV OMNIVOICE_DEVICE=cuda:0
+ENV WHISPER_DEVICE=cuda
+
+# Configure library search paths for CUDA/cuDNN libraries
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+
+# Install system dependencies (ffmpeg is needed for Whisper, and libsndfile1 for OmniVoice/soundfile)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy python dependencies file
+COPY server/requirements.txt ./
+
+# Upgrade pip and install server dependencies
+# Note: torch and torchaudio are already pre-installed in the base image.
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy all server code
+COPY server/ ./
+
+# Pre-download/cache model weights during the build process so they are baked in
+# 1. Whisper Model: large-v3-turbo (approx. 1.6 GB)
+RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')"
+
+# 2. OmniVoice Model: k2-fsa/OmniVoice (approx. 2.4 GB)
+RUN python3 -c "from omnivoice import OmniVoice; import torch; OmniVoice.from_pretrained('k2-fsa/OmniVoice', device_map='cpu', dtype=torch.float32)"
+
+# Expose backend FastAPI port
+EXPOSE 8765
+
+# Start the FastAPI server using Uvicorn
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8765"]

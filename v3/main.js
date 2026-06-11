@@ -5,9 +5,26 @@ import { TTSClient } from './src/tts_client.js';
 import { STTManager } from './src/stt.js';
 
 // ── Server config ─────────────────────────────────────────────────────────────
-const SERVER_HOST = import.meta.env.VITE_SERVER_HOST || 'localhost';
-const SERVER_PORT = import.meta.env.VITE_SERVER_PORT || '8765';
-const WS_BASE     = `ws://${SERVER_HOST}:${SERVER_PORT}`;
+const getWsBase = () => {
+  if (import.meta.env.VITE_SERVER_URL) {
+    return import.meta.env.VITE_SERVER_URL;
+  }
+  const host = import.meta.env.VITE_SERVER_HOST || (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' ? window.location.hostname : 'localhost');
+  const port = import.meta.env.VITE_SERVER_PORT || '8765';
+  return `ws://${host}:${port}`;
+};
+
+const getHttpBase = () => {
+  if (import.meta.env.VITE_HTTP_URL) {
+    return import.meta.env.VITE_HTTP_URL;
+  }
+  const host = import.meta.env.VITE_SERVER_HOST || (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' ? window.location.hostname : 'localhost');
+  const port = import.meta.env.VITE_SERVER_PORT || '8765';
+  return `http://${host}:${port}`;
+};
+
+const WS_BASE   = getWsBase();
+const HTTP_BASE = getHttpBase();
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 let avatar   = null;
@@ -157,7 +174,7 @@ function setupEventListeners() {
     updateStatusBadge('thinking');
     updateProgressUI('🤔 Generating reply…', true);
     try {
-      const res   = await fetch('/chat', {
+      const res   = await fetch(`${HTTP_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
