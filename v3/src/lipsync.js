@@ -9,10 +9,12 @@ export class LipSyncManager {
     this.nextPlayTime = 0;
     this.isPlaying = false;
     
-    // Audio pre-roll jitter buffering to prevent inference stutter
+    // Audio pre-roll: start playing after the first chunk arrives.
+    // Setting threshold to 1 minimises latency; flushBuffer() is called
+    // when TTS signals "complete" to force-play any remaining queued chunks.
     this.chunkQueue = [];
     this.isBuffering = true;
-    this.bufferThreshold = 2; // Buffer 2 chunks before starting playback
+    this.bufferThreshold = 1;
     
     // Timeline of scheduled phonemes
     // Each entry: { startTime, endTime, targetVisemes }
@@ -273,14 +275,13 @@ export class LipSyncManager {
   }
 
   /**
-   * Flushes the pre-roll buffer queue and starts scheduled playback
+   * Flushes the pre-roll buffer queue and starts scheduled playback.
+   * Safe to call multiple times — drains any remaining queued chunks.
    */
   flushBuffer() {
-    if (!this.isBuffering) return;
-    this.isBuffering = false;
-
     const tempQueue = [...this.chunkQueue];
     this.chunkQueue = [];
+    this.isBuffering = false;
 
     tempQueue.forEach(chunk => {
       this.scheduleChunk(chunk.samples, chunk.samplingRate, chunk.phonemeString);
@@ -372,7 +373,9 @@ export class LipSyncManager {
   }
 
   /**
-   * Splits a phoneme string and distributes the duration proportionally
+   * Splits a phoneme string and distributes the duration proportionally.
+   * Accepts either IPA phoneme strings or plain English text — in both cases
+   * it maps characters to approximate visemes so the mouth moves.
    */
   alignPhonemes(phonemes, startTime, totalDuration) {
     if (!phonemes || phonemes.length === 0) {

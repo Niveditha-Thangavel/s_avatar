@@ -1,519 +1,429 @@
 import { Avatar3D } from './src/avatar3d.js';
 import { BehaviorManager } from './src/behavior.js';
 import { LipSyncManager } from './src/lipsync.js';
+import { TTSClient } from './src/tts_client.js';
+import { STTManager } from './src/stt.js';
 
-// Global variables
-let avatar = null;
+// ── Server config ─────────────────────────────────────────────────────────────
+const SERVER_HOST = import.meta.env.VITE_SERVER_HOST || 'localhost';
+const SERVER_PORT = import.meta.env.VITE_SERVER_PORT || '8765';
+const WS_BASE     = `ws://${SERVER_HOST}:${SERVER_PORT}`;
+
+// ── Globals ───────────────────────────────────────────────────────────────────
+let avatar   = null;
 let behavior = null;
-let lipsync = null;
-let ttsWorker = null;
+let lipsync  = null;
+let tts      = null;
+let stt      = null;
 
-// File download progress tracker for TTS
-const fileProgressMap = new Map();
-
-// Timing variables for FPS counter
 let lastFrameTime = performance.now();
 let frameCount = 0;
-let fpsTimer = 0;
+let fpsTimer   = 0;
 
-// Start the application
+// ── Boot ──────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
-  // Inject Console HUD
-  const hud = document.createElement('div');
-  hud.id = 'console-hud';
-  hud.style.position = 'fixed';
-  hud.style.bottom = '10px';
-  hud.style.left = '10px';
-  hud.style.width = '350px';
-  hud.style.height = '150px';
-  hud.style.backgroundColor = 'rgba(10, 10, 15, 0.85)';
-  hud.style.color = '#00e676';
-  hud.style.fontFamily = 'monospace';
-  hud.style.fontSize = '11px';
-  hud.style.padding = '8px';
-  hud.style.overflowY = 'auto';
-  hud.style.zIndex = '10000';
-  hud.style.border = '1px solid #00e676';
-  hud.style.borderRadius = '6px';
-  hud.style.boxShadow = '0 4px 20px rgba(0,0,0,0.5)';
-  hud.style.pointerEvents = 'none'; // click-through
-  document.body.appendChild(hud);
+  injectConsoleHUD();
 
-  const logToHUD = (type, args) => {
-    const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
-    const line = document.createElement('div');
-    line.style.marginBottom = '4px';
-    line.innerText = `[${type.toUpperCase()}] ${msg}`;
-    if (type === 'error') line.style.color = '#ff1744';
-    if (type === 'warn') line.style.color = '#ffea00';
-    hud.appendChild(line);
-    hud.scrollTop = hud.scrollHeight;
+  // 3D scene + animation
+  avatar   = new Avatar3D('canvas-container', '/avatar_head.glb');
+  behavior = new BehaviorManager();
+  lipsync  = new LipSyncManager();
+
+  // ── TTS client ────────────────────────────────────────────────────────────
+  tts = new TTSClient(`${WS_BASE}/ws/tts`);
+
+  tts.onChunk = ({ audio, sampleRate, text }) => {
+    // Pass the sentence text as the "phoneme string" — lipsync will use
+    // the raw text characters to approximate mouth shapes. This gives
+    // visible lip movement even without real IPA phonemes from the server.
+    lipsync.queueAudioChunk(audio, sampleRate, text);
+    updateStatusBadge('speaking');
   };
 
-  const origLog = console.log;
-  const origWarn = console.warn;
-  const origError = console.error;
+  tts.onStatusChange = (status) => {
+    console.log('[TTS status]', status);
+    updateStatusBadge(status);
+    if (status === 'generating') {
+      updateProgressUI('🔊 Generating speech…', true);
+    }
+    if (status === 'complete') {
+      updateProgressUI('▶️ Playing…', false);
+      // Force-flush if fewer than bufferThreshold chunks arrived
+      lipsync.flushBuffer();
+    }
+  };
 
-  console.log = (...args) => { origLog(...args); logToHUD('log', args); };
-  console.warn = (...args) => { origWarn(...args); logToHUD('warn', args); };
-  console.error = (...args) => { origError(...args); logToHUD('error', args); };
+  tts.onError = (msg) => {
+    console.error('[TTS]', msg);
+    updateStatusBadge('error');
+  };
 
-  // 1. Register Service Worker for model caching
-  registerServiceWorker();
+  // ── STT manager ───────────────────────────────────────────────────────────
+  stt = new STTManager(`${WS_BASE}/ws/stt`);
 
-  // 2. Instantiate Managers
-  avatar = new Avatar3D('canvas-container', '/avatar_head.glb');
-  behavior = new BehaviorManager();
-  lipsync = new LipSyncManager();
+  stt.onTranscript = (text) => {
+    console.log('[STT] Heard:', text);
+    const ta = document.getElementById('text-input');
+    if (ta) ta.value = `🎤 You: ${text}`;
+    updateProgressUI('💬 Got transcript — generating reply…', true);
+  };
 
-  // 3. Initialize TTS Web Worker
-  initTTSWorker();
+  stt.onReply = (text) => {
+    console.log('[STT] Reply:', text);
+    const ta = document.getElementById('text-input');
+    if (ta) ta.value = `🤖 Avatar: ${text}`;
+    updateProgressUI('🔊 Generating speech…', true);
+    _speakText(text);
+  };
 
-  // 4. Bind UI Event Listeners
+  stt.onStatusChange = (status) => {
+    updateMicBadge(status);
+    const labels = {
+      listening:    '🎤 Listening…',
+      processing:   '⏳ Processing audio…',
+      transcribing: '📝 Transcribing…',
+      thinking:     '🤔 Thinking…',
+      stopped:      '',
+      idle:         '',
+    };
+    if (labels[status] !== undefined) {
+      updateProgressUI(labels[status], !!labels[status]);
+    }
+    if (status === 'idle' || status === 'stopped') {
+      const btn = document.getElementById('btn-mic');
+      if (btn) {
+        btn.classList.remove('active', 'processing');
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">🎤</span> Start Listening';
+      }
+    }
+    if (['processing', 'transcribing', 'thinking'].includes(status)) {
+      const btn = document.getElementById('btn-mic');
+      if (btn) {
+        btn.innerHTML = `<span class="btn-icon">⏳</span> ${status}…`;
+        btn.disabled = true;
+      }
+    }
+  };
+
+  stt.onError = (msg) => console.error('[STT]', msg);
+
+  // Bind UI + start render loop
   setupEventListeners();
-
-  // 5. Hook up custom events from Avatar3D for model loading states
   setupAvatarLoadingEvents();
-
-  // 5b. Setup Posture Calibration sliders
   setupCalibrationSliders();
-
-  // 6. Trigger first load of the TTS model (q4 is twice as fast and uses half the RAM)
-  loadModel('q4', 'wasm');
-
-  // 7. Start Render Loop
   requestAnimationFrame(renderLoop);
 });
 
+// ── Core speak function ───────────────────────────────────────────────────────
 /**
- * Register the Service Worker to intercept and cache Hugging Face model requests
+ * Synthesise text via the server TTS and play it through the lip-sync engine.
+ * All audio scheduling and viseme morph-target updates happen inside
+ * lipsync.queueAudioChunk() → lipsync.update() → avatar.render().
  */
-async function registerServiceWorker() {
-  if ('serviceWorker' in navigator) {
-    try {
-      const registrations = await navigator.serviceWorker.getRegistrations();
-      for (const registration of registrations) {
-        await registration.unregister();
-        console.log('[App] Service Worker unregistered successfully');
-      }
-    } catch (error) {
-      console.warn('[App] Service Worker unregistration failed:', error);
-    }
+async function _speakText(text) {
+  if (!text?.trim()) return;
+
+  // Stop any currently playing audio and reset the lipsync state.
+  // init() is idempotent — safe to call even if already initialised.
+  lipsync.stop();
+  lipsync.init();
+  lipsync.resume();
+
+  const instruct = document.getElementById('instruct-input')?.value?.trim() || null;
+  const speed    = parseFloat(document.getElementById('speed-range')?.value   || '1.0');
+  const numStep  = parseInt(document.getElementById('quality-select')?.value  || '16', 10);
+
+  updateStatusBadge('generating');
+  updateProgressUI('🔊 Generating speech…', true);
+
+  try {
+    await tts.speak({ text, instruct, speed, numStep });
+  } catch (err) {
+    console.error('[Speak]', err);
+    updateStatusBadge('error');
+    updateProgressUI('❌ TTS error', false);
   }
-  if ('caches' in window) {
-    try {
-      await caches.delete('avatar-app-cache-v1');
-      console.log('[App] Local app cache cleared');
-    } catch (error) {
-      console.warn('[App] Cache deletion failed:', error);
-    }
-  }
 }
 
-/**
- * Initialize Web Worker for Background TTS
- */
-function initTTSWorker() {
-  ttsWorker = new Worker(new URL('./src/tts.worker.js', import.meta.url), { type: 'module' });
-
-  // Handle messages from the worker thread
-  ttsWorker.onmessage = (event) => {
-    const { type, data } = event.data;
-
-    switch (type) {
-      case 'status':
-        updateStatusBadge(data);
-        break;
-
-      case 'progress':
-        handleDownloadProgress(data);
-        break;
-
-      case 'error':
-        hideLoader();
-        updateStatusBadge('error');
-        alert(data);
-        break;
-
-      case 'chunk':
-        const samples = new Float32Array(data.audio);
-        lipsync.queueAudioChunk(samples, data.samplingRate, data.phonemes);
-        updateStatusBadge('speaking');
-        break;
-    }
-  };
-}
-
-/**
- * Send load model request to worker
- */
-function loadModel(dtype, device) {
-  fileProgressMap.clear();
-  document.getElementById('file-progress-list').innerHTML = '';
-  document.getElementById('progress-bar-fill').style.width = '0%';
-  document.getElementById('progress-text').innerText = 'Initializing ONNX Runtime...';
-  showLoader();
-
-  ttsWorker.postMessage({
-    type: 'load',
-    data: {
-      modelId: 'onnx-community/Kokoro-82M-v1.0-ONNX',
-      dtype: dtype,
-      device: device
-    }
-  });
-}
-
-/**
- * Handle custom loading events triggered by the Avatar3D loader
- */
-function setupAvatarLoadingEvents() {
-  window.addEventListener('avatar-loading-progress', (event) => {
-    showLoader();
-    document.getElementById('progress-bar-fill').style.width = `${event.detail}%`;
-    document.getElementById('progress-text').innerText = `Downloading 3D Head Model: ${event.detail.toFixed(1)}%`;
-  });
-
-  window.addEventListener('avatar-loaded', () => {
-    hideLoader();
-    updateStatusBadge('ready');
-  });
-}
-
-/**
- * Event Listeners Binding
- */
+// ── Event listeners ───────────────────────────────────────────────────────────
 function setupEventListeners() {
-  // TTS triggers
-  const btnSpeak = document.getElementById('btn-speak');
-  const btnStop = document.getElementById('btn-stop');
-  const textarea = document.getElementById('text-input');
-  
-  btnSpeak.addEventListener('click', () => {
-    const text = textarea.value.trim();
+
+  // Speak button — typed text goes through server chat layer first
+  document.getElementById('btn-speak')?.addEventListener('click', async () => {
+    const text = document.getElementById('text-input')?.value?.trim();
     if (!text) return;
 
-    // Resuming AudioContext requires a user-gesture triggers
-    lipsync.init();
-    lipsync.resume();
+    updateStatusBadge('thinking');
+    updateProgressUI('🤔 Generating reply…', true);
+    try {
+      const res   = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const { reply } = await res.json();
+      if (reply) {
+        document.getElementById('text-input').value = `🤖 Avatar: ${reply}`;
+        _speakText(reply);
+      }
+    } catch (err) {
+      console.error('[Chat]', err);
+      updateStatusBadge('error');
+      updateProgressUI('❌ Server error', false);
+    }
+  });
 
-    // Reset current lip-sync play queues
+  // Stop button
+  document.getElementById('btn-stop')?.addEventListener('click', () => {
+    tts.stop();
     lipsync.stop();
-
-    const voice = document.getElementById('voice-select').value;
-    const speed = parseFloat(document.getElementById('speed-range').value);
-
-    // Send generation command to worker
-    ttsWorker.postMessage({
-      type: 'generate',
-      data: { text, voice, speed }
-    });
-
-    btnSpeak.disabled = true;
-    btnStop.disabled = false;
+    updateStatusBadge('idle');
   });
 
-  btnStop.addEventListener('click', () => {
-    lipsync.stop();
-    btnSpeak.disabled = false;
-    btnStop.disabled = true;
-    updateStatusBadge('ready');
-  });
-
-  // Settings Sliders
-  const speedRange = document.getElementById('speed-range');
-  const speedVal = document.getElementById('speed-val');
-  speedRange.addEventListener('input', () => {
-    speedVal.innerText = speedRange.value;
-  });
-
-  const emotionSelect = document.getElementById('emotion-select');
-  if (emotionSelect) {
-    emotionSelect.addEventListener('change', () => {
-      if (behavior) {
-        behavior.currentEmotion = emotionSelect.value;
+  // Mic toggle
+  const btnMic = document.getElementById('btn-mic');
+  if (btnMic) {
+    btnMic.addEventListener('click', async () => {
+      if (stt.isListening) {
+        // User pressed Stop → send audio to Whisper, wait for reply
+        btnMic.classList.remove('active');
+        btnMic.innerHTML = '<span class="btn-icon">⏳</span> Processing…';
+        btnMic.disabled  = true;
+        stt.stop();   // sends { type:"stop" }, keeps socket open for reply
+      } else {
+        try {
+          const lang = document.getElementById('lang-select')?.value || null;
+          await stt.start(lang);
+          btnMic.classList.add('active');
+          btnMic.innerHTML = '<span class="btn-icon">🔴</span> Stop & Transcribe';
+        } catch (err) {
+          console.error('[Mic]', err.message);
+          alert(err.message);
+        }
       }
     });
   }
 
-  const volumeRange = document.getElementById('volume-range');
-  const volumeVal = document.getElementById('volume-val');
-  volumeRange.addEventListener('input', () => {
-    volumeVal.innerText = volumeRange.value;
+  // Speed slider
+  const speedRange = document.getElementById('speed-range');
+  const speedVal   = document.getElementById('speed-val');
+  speedRange?.addEventListener('input', () => {
+    if (speedVal) speedVal.innerText = speedRange.value;
   });
 
-  // Upload Custom 3D Model (GLB/GLTF)
-  const imageUpload = document.getElementById('image-upload');
-  imageUpload.addEventListener('change', (event) => {
-    const file = event.target.files[0];
-    if (file) {
-      if (!file.name.toLowerCase().endsWith('.glb') && !file.name.toLowerCase().endsWith('.gltf')) {
-        alert('Please select a valid 3D model file in .glb or .gltf format.');
-        return;
-      }
-      const url = URL.createObjectURL(file);
-      avatar.loadGLBModel(url);
+  // Emotion select
+  document.getElementById('emotion-select')?.addEventListener('change', (e) => {
+    if (behavior) behavior.currentEmotion = e.target.value;
+  });
+
+  // Custom GLB upload
+  document.getElementById('image-upload')?.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!/\.(glb|gltf)$/i.test(file.name)) {
+      alert('Please select a .glb or .gltf file.');
+      return;
     }
+    avatar.loadGLBModel(URL.createObjectURL(file));
   });
 
-  // Reset Default Avatar Model
-  document.getElementById('btn-reset-avatar').addEventListener('click', () => {
+  // Reset avatar
+  document.getElementById('btn-reset-avatar')?.addEventListener('click', () => {
     avatar.loadGLBModel('/avatar_head.glb');
   });
-
-  // Model Reload Apply settings
-  document.getElementById('btn-apply-settings').addEventListener('click', () => {
-    const dtype = document.getElementById('quant-select').value;
-    const device = document.getElementById('device-select').value;
-    loadModel(dtype, device);
-  });
 }
 
-/**
- * Handle individual model asset download streams
- */
-function handleDownloadProgress(progressData) {
-  fileProgressMap.set(progressData.file, progressData);
-
-  const progressList = document.getElementById('file-progress-list');
-  progressList.innerHTML = '';
-
-  let totalPercentSum = 0;
-  let activeDownloads = 0;
-
-  fileProgressMap.forEach((info) => {
-    activeDownloads++;
-    totalPercentSum += info.progress;
-
-    const fileItem = document.createElement('div');
-    fileItem.className = 'file-progress-item';
-    
-    const shortName = info.file.split('/').pop();
-    
-    fileItem.innerHTML = `
-      <span class="file-name">${shortName}</span>
-      <span class="file-percent">${info.progress.toFixed(1)}%</span>
-    `;
-    progressList.appendChild(fileItem);
+// ── Avatar load events ────────────────────────────────────────────────────────
+function setupAvatarLoadingEvents() {
+  window.addEventListener('avatar-loading-progress', (e) => {
+    showLoader();
+    document.getElementById('progress-bar-fill').style.width = `${e.detail}%`;
+    document.getElementById('progress-text').innerText =
+      `Loading 3D Model: ${e.detail.toFixed(1)}%`;
   });
-
-  const averageProgress = activeDownloads > 0 ? (totalPercentSum / activeDownloads) : 0;
-  
-  document.getElementById('progress-bar-fill').style.width = `${averageProgress}%`;
-  document.getElementById('progress-text').innerText = `Downloading Model Assets: ${averageProgress.toFixed(1)}%`;
-}
-
-/**
- * Update HUD and badge elements
- */
-function updateStatusBadge(status) {
-  const badge = document.getElementById('hud-status');
-  badge.className = `status-badge ${status}`;
-  badge.innerText = status;
-
-  const btnSpeak = document.getElementById('btn-speak');
-  const btnStop = document.getElementById('btn-stop');
-
-  if (status === 'ready' || status === 'complete') {
-    btnSpeak.disabled = false;
-    btnStop.disabled = true;
+  window.addEventListener('avatar-loaded', () => {
     hideLoader();
-    if (status === 'complete' && lipsync) {
-      lipsync.flushBuffer();
-    }
-  } else if (status === 'loading') {
-    btnSpeak.disabled = true;
-    btnStop.disabled = true;
-  } else if (status === 'generating') {
-    btnSpeak.disabled = true;
-    btnStop.disabled = false;
-  } else if (status === 'speaking') {
-    btnSpeak.disabled = true;
-    btnStop.disabled = false;
-  }
+    updateStatusBadge('idle');
+  });
 }
 
-function showLoader() {
-  document.getElementById('model-loader').classList.remove('hidden');
-}
-
-function hideLoader() {
-  document.getElementById('model-loader').classList.add('hidden');
-}
-
-/**
- * Animation Render Loop
- */
+// ── Render loop ───────────────────────────────────────────────────────────────
 function renderLoop() {
   requestAnimationFrame(renderLoop);
 
   const now = performance.now();
-  const dt = (now - lastFrameTime) / 1000.0;
+  const dt  = (now - lastFrameTime) / 1000.0;
   lastFrameTime = now;
 
   frameCount++;
   fpsTimer += dt;
   if (fpsTimer >= 0.5) {
-    const fps = Math.round(frameCount / fpsTimer);
-    document.getElementById('hud-fps').innerText = fps;
+    document.getElementById('hud-fps').innerText = Math.round(frameCount / fpsTimer);
     frameCount = 0;
-    fpsTimer = 0;
+    fpsTimer   = 0;
   }
 
+  // Volume from the currently playing TTS audio drives head-bobbing
   const volume = lipsync.getVolume();
-  
   behavior.update(dt, volume);
   lipsync.update(dt);
-
   updateHUDPhoneme();
 
-  if (avatar) {
-    avatar.render(dt, behavior, lipsync);
+  if (avatar) avatar.render(dt, behavior, lipsync);
+}
+
+// ── HUD & status ──────────────────────────────────────────────────────────────
+function updateStatusBadge(status) {
+  const badge = document.getElementById('hud-status');
+  if (badge) { badge.className = `status-badge ${status}`; badge.innerText = status; }
+
+  const busy = ['generating', 'speaking', 'thinking', 'transcribing'].includes(status);
+  document.getElementById('btn-speak')?.toggleAttribute('disabled', busy);
+  document.getElementById('btn-stop')?.toggleAttribute('disabled', !busy);
+
+  if (['idle', 'complete', 'stopped'].includes(status)) {
+    hideLoader();
+    updateProgressUI('', false);
   }
 }
 
-/**
- * Update the active phoneme HUD display
- */
-function updateHUDPhoneme() {
-  if (!lipsync || !lipsync.isPlaying || !lipsync.audioCtx) {
-    document.getElementById('hud-phoneme').innerText = '-';
+// ── Progress UI ───────────────────────────────────────────────────────────────
+function updateProgressUI(message, showSpinner) {
+  const bar  = document.getElementById('progress-bar');
+  const text = document.getElementById('progress-label');
+  if (!bar || !text) return;
+
+  if (!message) {
+    bar.style.display = 'none';
     return;
   }
 
-  const playTime = lipsync.audioCtx.currentTime;
-  const activeEvent = lipsync.phonemeTimeline.find(
-    event => playTime >= event.startTime && playTime <= event.endTime
-  );
+  bar.style.display = 'flex';
+  text.innerText = message;
 
-  if (activeEvent) {
-    let activeChar = '-';
-    lipsync.phonemeTimeline.forEach((evt) => {
-      if (playTime >= evt.startTime && playTime <= evt.endTime) {
-        activeChar = Object.keys(lipsync.phonemeWeights).find(
-          char => JSON.stringify(lipsync.mapPhonemeToVisemes(char)) === JSON.stringify(evt.targetVisemes)
-        ) || '-';
-      }
-    });
-
-    document.getElementById('hud-phoneme').innerText = activeChar.toUpperCase();
-  } else {
-    document.getElementById('hud-phoneme').innerText = '-';
+  const fill = document.getElementById('progress-bar-fill');
+  if (fill) {
+    if (showSpinner) {
+      fill.classList.add('indeterminate');
+    } else {
+      fill.classList.remove('indeterminate');
+      fill.style.width = '100%';
+    }
   }
 }
 
-/**
- * Setup Posture Calibration Sliders
- */
-function setupCalibrationSliders() {
-  // Initial default values - setting user's new calibrated shoulder rotations
-  const defaults = {
-    laX: -1.82, laY: -2.42, laZ: 3.14,
-    raX: -1.82, raY: 2.62, raZ: -3.14,
-    lfX: 1.10, lfY: 0.00, lfZ: -0.20,
-    rfX: 1.12, rfY: 0.00, rfZ: 0.14,
-    lhX: -0.10, lhY: 1.66, lhZ: 0.26,
-    rhX: -0.18, rhY: -1.66, rhZ: -0.26
-  };
+function updateMicBadge(status) {
+  const badge = document.getElementById('hud-mic');
+  if (badge) { badge.className = `status-badge ${status}`; badge.innerText = `mic: ${status}`; }
+}
 
-  // Set global object
+function showLoader() { document.getElementById('model-loader')?.classList.remove('hidden'); }
+function hideLoader()  { document.getElementById('model-loader')?.classList.add('hidden'); }
+
+function updateHUDPhoneme() {
+  const el = document.getElementById('hud-phoneme');
+  if (!el) return;
+  if (!lipsync?.isPlaying || !lipsync?.audioCtx) { el.innerText = '-'; return; }
+  const t      = lipsync.audioCtx.currentTime;
+  const active = lipsync.phonemeTimeline.find(ev => t >= ev.startTime && t <= ev.endTime);
+  el.innerText = active ? '●' : '-';
+}
+
+// ── Console HUD ───────────────────────────────────────────────────────────────
+function injectConsoleHUD() {
+  const hud = document.createElement('div');
+  Object.assign(hud.style, {
+    position: 'fixed', bottom: '10px', left: '10px',
+    width: '350px', height: '150px',
+    backgroundColor: 'rgba(10,10,15,0.85)',
+    color: '#00e676', fontFamily: 'monospace', fontSize: '11px',
+    padding: '8px', overflowY: 'auto', zIndex: '10000',
+    border: '1px solid #00e676', borderRadius: '6px',
+    pointerEvents: 'none',
+  });
+  document.body.appendChild(hud);
+
+  ['log', 'warn', 'error'].forEach((lvl) => {
+    const orig = console[lvl];
+    console[lvl] = (...args) => {
+      orig(...args);
+      const line = document.createElement('div');
+      line.style.marginBottom = '4px';
+      line.style.color = lvl === 'error' ? '#ff1744' : lvl === 'warn' ? '#ffea00' : '#00e676';
+      line.innerText = `[${lvl.toUpperCase()}] ${args.map(a =>
+        typeof a === 'object' ? JSON.stringify(a) : a).join(' ')}`;
+      hud.appendChild(line);
+      hud.scrollTop = hud.scrollHeight;
+    };
+  });
+}
+
+// ── Calibration sliders ───────────────────────────────────────────────────────
+function setupCalibrationSliders() {
+  const defaults = {
+    laX: -1.82, laY: -2.42, laZ:  3.14,
+    raX: -1.82, raY:  2.62, raZ: -3.14,
+    lfX:  1.10, lfY:  0.00, lfZ: -0.20,
+    rfX:  1.12, rfY:  0.00, rfZ:  0.14,
+    lhX: -0.10, lhY:  1.66, lhZ:  0.26,
+    rhX: -0.18, rhY: -1.66, rhZ: -0.26,
+  };
   window.avatarCalibration = { ...defaults };
 
   const sliders = [
-    { id: 'cal-la-x', key: 'laX' },
-    { id: 'cal-la-y', key: 'laY' },
-    { id: 'cal-la-z', key: 'laZ' },
-    { id: 'cal-ra-x', key: 'raX' },
-    { id: 'cal-ra-y', key: 'raY' },
-    { id: 'cal-ra-z', key: 'raZ' },
-    { id: 'cal-lf-x', key: 'lfX' },
-    { id: 'cal-lf-y', key: 'lfY' },
-    { id: 'cal-lf-z', key: 'lfZ' },
-    { id: 'cal-rf-x', key: 'rfX' },
-    { id: 'cal-rf-y', key: 'rfY' },
-    { id: 'cal-rf-z', key: 'rfZ' },
-    { id: 'cal-lh-x', key: 'lhX' },
-    { id: 'cal-lh-y', key: 'lhY' },
-    { id: 'cal-lh-z', key: 'lhZ' },
-    { id: 'cal-rh-x', key: 'rhX' },
-    { id: 'cal-rh-y', key: 'rhY' },
-    { id: 'cal-rh-z', key: 'rhZ' }
+    'la-x','la-y','la-z','ra-x','ra-y','ra-z',
+    'lf-x','lf-y','lf-z','rf-x','rf-y','rf-z',
+    'lh-x','lh-y','lh-z','rh-x','rh-y','rh-z',
   ];
 
-  function updateCodeOutput() {
+  const updateCode = () => {
     const c = window.avatarCalibration;
-    const snippet = `// Copy and paste this into src/avatar3d.js inside updateArmSways():
-
-// Left Arm (upper)
-this.leftArm.rotation.x = this.initialLeftArmRot.x + (${c.laX.toFixed(2)}) + swayX + gestureLeftX;
-this.leftArm.rotation.y = this.initialLeftArmRot.y + (${c.laY.toFixed(2)}) + gestureLeftY;
-this.leftArm.rotation.z = this.initialLeftArmRot.z + (${c.laZ.toFixed(2)}) + swayZ + gestureLeftZ;
-
-// Right Arm (upper)
-this.rightArm.rotation.x = this.initialRightArmRot.x + (${c.raX.toFixed(2)}) + swayX + gestureRightX;
-this.rightArm.rotation.y = this.initialRightArmRot.y + (${c.raY.toFixed(2)}) + gestureRightY;
-this.rightArm.rotation.z = this.initialRightArmRot.z + (${c.raZ.toFixed(2)}) + swayZ + gestureRightZ;
-
-// Left Forearm
-this.leftForeArm.rotation.x = this.initialLeftForeArmRot.x + (${c.lfX.toFixed(2)}) + gestureLeftX * 0.8;
-this.leftForeArm.rotation.y = this.initialLeftForeArmRot.y + (${c.lfY.toFixed(2)}) + gestureLeftY * 0.8;
-this.leftForeArm.rotation.z = this.initialLeftForeArmRot.z + (${c.lfZ.toFixed(2)}) + swayZ + gestureLeftZ * 0.8;
-
-// Right Forearm
-this.rightForeArm.rotation.x = this.initialRightForeArmRot.x + (${c.rfX.toFixed(2)}) + gestureRightX * 0.8;
-this.rightForeArm.rotation.y = this.initialRightForeArmRot.y + (${c.rfY.toFixed(2)}) + gestureRightY * 0.8;
-this.rightForeArm.rotation.z = this.initialRightForeArmRot.z + (${c.rfZ.toFixed(2)}) + swayZ + gestureRightZ * 0.8;
-
-// Left Hand (Wrist)
-if (this.leftHand && this.initialLeftHandRot) {
-  this.leftHand.rotation.x = this.initialLeftHandRot.x + (${c.lhX.toFixed(2)});
-  this.leftHand.rotation.y = this.initialLeftHandRot.y + (${c.lhY.toFixed(2)}) + Math.sin(time * 5.0) * 0.18 * gestureScale;
-  this.leftHand.rotation.z = this.initialLeftHandRot.z + (${c.lhZ.toFixed(2)});
-}
-
-// Right Hand (Wrist)
-if (this.rightHand && this.initialRightHandRot) {
-  this.rightHand.rotation.x = this.initialRightHandRot.x + (${c.rhX.toFixed(2)});
-  this.rightHand.rotation.y = this.initialRightHandRot.y + (${c.rhY.toFixed(2)}) + Math.cos(time * 5.2) * -0.18 * gestureScale;
-  this.rightHand.rotation.z = this.initialRightHandRot.z + (${c.rhZ.toFixed(2)});
-}`;
-
     const out = document.getElementById('cal-code-output');
-    if (out) out.innerText = snippet;
-  }
+    if (!out) return;
+    out.innerText = `const cal = {\n` +
+      Object.entries(c).map(([k,v]) => `  ${k}: ${v.toFixed(2)}`).join(',\n') + '\n};';
+  };
 
-  // Bind input events
-  sliders.forEach(slider => {
-    const el = document.getElementById(slider.id);
-    const valEl = document.getElementById(slider.id + '-val');
-    if (el) {
-      el.addEventListener('input', () => {
-        const val = parseFloat(el.value);
-        window.avatarCalibration[slider.key] = val;
-        if (valEl) valEl.innerText = val.toFixed(2);
-        updateCodeOutput();
-      });
-    }
+  sliders.forEach((s) => {
+    const key = s.replace('-','').replace(/([a-z])([XYZ])/, (_,a,b) => a + b.toLowerCase())
+                  .replace(/^([lr][afh])([xyz])$/, (_, bone, ax) =>
+                    bone[0] + bone[1].toUpperCase() + ax.toUpperCase());
+    // Map "la-x" → "laX" style key
+    const camelKey = s.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
+                       .replace(/^([a-z]{2})([a-z])$/, (_, b, ax) => b + ax.toUpperCase());
+    const el    = document.getElementById(`cal-${s}`);
+    const valEl = document.getElementById(`cal-${s}-val`);
+    if (!el) return;
+    el.addEventListener('input', () => {
+      const v = parseFloat(el.value);
+      // find matching key in defaults
+      const matchKey = Object.keys(defaults).find(k =>
+        k.toLowerCase() === camelKey.toLowerCase()
+      );
+      if (matchKey) {
+        window.avatarCalibration[matchKey] = v;
+        if (valEl) valEl.innerText = v.toFixed(2);
+        updateCode();
+      }
+    });
   });
 
-  // Reset calibration
-  const btnReset = document.getElementById('btn-reset-calibration');
-  if (btnReset) {
-    btnReset.addEventListener('click', () => {
-      window.avatarCalibration = { ...defaults };
-      sliders.forEach(slider => {
-        const el = document.getElementById(slider.id);
-        const valEl = document.getElementById(slider.id + '-val');
-        if (el) {
-          el.value = defaults[slider.key];
-          if (valEl) valEl.innerText = defaults[slider.key].toFixed(2);
-        }
-      });
-      updateCodeOutput();
+  document.getElementById('btn-reset-calibration')?.addEventListener('click', () => {
+    window.avatarCalibration = { ...defaults };
+    sliders.forEach((s) => {
+      const el    = document.getElementById(`cal-${s}`);
+      const valEl = document.getElementById(`cal-${s}-val`);
+      const matchKey = Object.keys(defaults).find(k =>
+        k.toLowerCase() === s.replace('-','').toLowerCase()
+      );
+      if (el && matchKey) {
+        el.value = defaults[matchKey];
+        if (valEl) valEl.innerText = defaults[matchKey].toFixed(2);
+      }
     });
-  }
+    updateCode();
+  });
 
-  // Initialize output display
-  updateCodeOutput();
+  updateCode();
 }
-
