@@ -42,7 +42,7 @@ COPY server/ ./
 RUN python3 -c "from omnivoice import OmniVoice; import torch; OmniVoice.from_pretrained('k2-fsa/OmniVoice', device_map='cpu', dtype=torch.float32)"
 
 # 2. Multimodal Chat Model: fixie-ai/ultravox-v0_6-llama-3_1-8b (approx. 16 GB)
-RUN python3 -c "import transformers.modeling_utils; import transformers.integrations.accelerate; transformers.modeling_utils._init_weights = True; transformers.modeling_utils.check_and_set_device_map = lambda x: x; transformers.integrations.accelerate.check_and_set_device_map = lambda x: x; transformers.pipeline(model='fixie-ai/ultravox-v0_6-llama-3_1-8b', trust_remote_code=True)"
+RUN python3 cache_model.py
 
 # Expose backend FastAPI port
 EXPOSE 8765
