@@ -1,6 +1,6 @@
 """
 chat.py
-Integrates fixie-ai/ultravox-v0_4_1-mistral-nemo to handle both audio and text inputs.
+Integrates fixie-ai/ultravox-v0_6-llama-3_1-8b to handle both audio and text inputs.
 Replaces Whisper and Sarvam models, performing direct Speech-to-Text-and-Text reasoning.
 Includes a robust mock responder fallback for local testing.
 """
@@ -16,7 +16,7 @@ from typing import Dict, Tuple, Optional, List
 # Set up logging
 logger = logging.getLogger(__name__)
 
-MODEL_ID = "fixie-ai/ultravox-v0_4_1-mistral-nemo"
+MODEL_ID = "fixie-ai/ultravox-v0_6-llama-3_1-8b"
 _pipeline = None
 _model_failed = False
 _lock = asyncio.Lock()
@@ -44,6 +44,17 @@ async def load_chat_model() -> Optional[object]:
             # Monkey-patch to fix library version incompatibility with Ultravox custom weight init
             if not hasattr(transformers.modeling_utils, "_init_weights"):
                 transformers.modeling_utils._init_weights = True
+
+            # Monkey-patch check_and_set_device_map to bypass meta device context check errors
+            try:
+                transformers.modeling_utils.check_and_set_device_map = lambda x: x
+            except Exception:
+                pass
+            try:
+                import transformers.integrations.accelerate
+                transformers.integrations.accelerate.check_and_set_device_map = lambda x: x
+            except Exception:
+                pass
 
             # Determine best device (MPS for Apple Silicon, CUDA for GPU, otherwise CPU)
             device = "cpu"
