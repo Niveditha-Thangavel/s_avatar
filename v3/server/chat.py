@@ -177,10 +177,11 @@ async def get_response(user_text: str) -> Dict[str, str]:
     try:
         system_prompt = (
             "You are a helpful multilingual talking avatar assistant.\n"
-            "You must respond in the user's language, and format your output as a JSON object containing exactly two keys:\n"
+            "Respond in the user's language, and format your output as a JSON object containing exactly two keys:\n"
             "1. 'native_text': The response in the native script (e.g. Tamil, Hindi, Telugu, or English).\n"
             "2. 'romanized_text': The phonetically equivalent Romanized transliteration of the native text.\n\n"
             "CRITICAL RULES:\n"
+            "- If the user query is in English, both native_text and romanized_text must be the identical English sentence.\n"
             "- Both sentences must feature the identical amount of words.\n"
             "- Punctuation flags and grammatical cadence must match directly.\n"
             "- Splitting both strings by spaces must yield a perfectly mirrored array mapping index.\n"
@@ -189,6 +190,16 @@ async def get_response(user_text: str) -> Dict[str, str]:
 
         messages = [
             {"role": "system", "content": system_prompt},
+            # Few-shot English
+            {"role": "user", "content": "Hello! Who are you?"},
+            {"role": "assistant", "content": '{"native_text": "Hello, I am your AI assistant.", "romanized_text": "Hello, I am your AI assistant."}'},
+            # Few-shot Tamil
+            {"role": "user", "content": "வணக்கம், நீங்கள் யார்?"},
+            {"role": "assistant", "content": '{"native_text": "வணக்கம், நான் உங்கள் ஏஐ உதவியாளர்.", "romanized_text": "Vanakkam, naan ungal AI udhaviyaalar."}'},
+            # Few-shot Hindi
+            {"role": "user", "content": "नमस्ते, आप कौन हैं?"},
+            {"role": "assistant", "content": '{"native_text": "नमस्ते, मैं आपका एआई सहायक हूँ।", "romanized_text": "Namaste, main aapka AI sahayak hoon."}'},
+            # Actual query
             {"role": "user", "content": user_text}
         ]
 
@@ -232,8 +243,8 @@ async def get_response(user_text: str) -> Dict[str, str]:
 def _run_inference(model, processor, text_prompt: str) -> str:
     """Synchronous model execution run in executor thread."""
     inputs = processor(text=[text_prompt], return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=512)
+    with torch.inference_mode():
+        outputs = model.generate(**inputs, max_new_tokens=128, use_cache=True)
     
     # Decodes only the newly generated token IDs
     generated_ids = [

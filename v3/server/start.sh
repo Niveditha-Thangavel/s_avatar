@@ -31,10 +31,10 @@ fi
 
 echo "Disk space OK: ${AVAIL_GB} GB available"
 
-# ── Force CPU inference (avoids MPS Metal shader cache disk writes on Mac) ───
-# Remove these lines if you have a CUDA GPU and want GPU acceleration.
-export OMNIVOICE_DEVICE=cpu
-export WHISPER_DEVICE=cpu
+# ── Device auto-detection ───
+# Let the server auto-detect MPS on Mac or CUDA on GPU machines
+# export OMNIVOICE_DEVICE=cpu
+# export WHISPER_DEVICE=cpu
 
 # Suppress tokenizer parallelism warnings
 export TOKENIZERS_PARALLELISM=false

@@ -71,15 +71,14 @@ DEFAULT_REF_AUDIO = _HERE / "ref_audio.wav"
 
 # Auto-detect best device
 def _best_device() -> str:
-    # MPS (Apple Silicon GPU) writes large Metal shader cache files to disk
-    # which fails when disk is low, and is less stable than CPU for inference.
-    # Force CPU on Mac; enable MPS explicitly by setting OMNIVOICE_DEVICE=mps.
     import os
     forced = os.environ.get("OMNIVOICE_DEVICE", "").lower()
     if forced:
         return forced
     if torch.cuda.is_available():
         return "cuda:0"
+    if torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 def _best_dtype(device: str) -> torch.dtype:
