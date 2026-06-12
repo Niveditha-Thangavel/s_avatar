@@ -1,6 +1,6 @@
 """
 chat.py
-Integrates fixie-ai/ultravox-v0_6-llama-3_1-8b to handle both audio and text inputs.
+Integrates fixie-ai/ultravox-v0_4_1-mistral-nemo to handle both audio and text inputs.
 Replaces Whisper and Sarvam models, performing direct Speech-to-Text-and-Text reasoning.
 Includes a robust mock responder fallback for local testing.
 """
@@ -16,7 +16,7 @@ from typing import Dict, Tuple, Optional, List
 # Set up logging
 logger = logging.getLogger(__name__)
 
-MODEL_ID = "fixie-ai/ultravox-v0_6-llama-3_1-8b"
+MODEL_ID = "fixie-ai/ultravox-v0_4_1-mistral-nemo"
 _pipeline = None
 _model_failed = False
 _lock = asyncio.Lock()
