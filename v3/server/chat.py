@@ -1,8 +1,8 @@
 """
 chat.py
-Integrates mashriram/Sarvam-1-VL-4B-Instruct-VLLM to process user intent
-and generate dual-track responses (native_text and romanized_text) aligned 1:1.
-Includes a robust multilingual mock responder for local/offline testing.
+Integrates fixie-ai/ultravox-v0_6-llama-3_1-8b to handle both audio and text inputs.
+Replaces Whisper and Sarvam models, performing direct Speech-to-Text-and-Text reasoning.
+Includes a robust mock responder fallback for local testing.
 """
 
 import os
@@ -10,38 +10,37 @@ import json
 import logging
 import asyncio
 import torch
-from typing import Dict, Tuple, Optional
+import numpy as np
+from typing import Dict, Tuple, Optional, List
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
-MODEL_ID = "mashriram/Sarvam-1-VL-4B-Instruct-VLLM"
-_model = None
-_processor = None
+MODEL_ID = "fixie-ai/ultravox-v0_6-llama-3_1-8b"
+_pipeline = None
 _model_failed = False
 _lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Lazy model loading
+# Lazy pipeline loading
 # ---------------------------------------------------------------------------
 
-async def load_chat_model() -> Tuple[Optional[object], Optional[object]]:
-    """Loads the Sarvam-1-VL model and processor lazily with error fallback."""
-    global _model, _processor, _model_failed
+async def load_chat_model() -> Optional[object]:
+    """Loads the Ultravox pipeline lazily with error fallback."""
+    global _pipeline, _model_failed
     if _model_failed:
-        return None, None
-    if _model is not None:
-        return _model, _processor
+        return None
+    if _pipeline is not None:
+        return _pipeline
 
     async with _lock:
-        if _model is not None:
-            return _model, _processor
+        if _pipeline is not None:
+            return _pipeline
 
         try:
-            logger.info("[Chat] Loading model '%s' ...", MODEL_ID)
-            # Deferred heavy imports
-            from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor
+            logger.info("[Chat] Loading Ultravox model '%s' ...", MODEL_ID)
+            import transformers
 
             # Determine best device (MPS for Apple Silicon, CUDA for GPU, otherwise CPU)
             device = "cpu"
@@ -52,85 +51,77 @@ async def load_chat_model() -> Tuple[Optional[object], Optional[object]]:
 
             dtype = torch.float32 if device in ("cpu", "mps") else torch.float16
 
-            processor = Qwen3VLProcessor.from_pretrained(MODEL_ID)
-            model = Qwen3VLForConditionalGeneration.from_pretrained(
-                MODEL_ID,
-                torch_dtype=dtype,
-                device_map=device
+            # Load the transformers pipeline with trust_remote_code=True
+            pipe = transformers.pipeline(
+                model=MODEL_ID,
+                trust_remote_code=True,
+                device=device,
+                torch_dtype=dtype
             )
 
-            _model = model
-            _processor = processor
-            logger.info("[Chat] Model loaded successfully on device: %s", device)
-            return _model, _processor
+            _pipeline = pipe
+            logger.info("[Chat] Ultravox pipeline loaded successfully on device: %s", device)
+            return _pipeline
         except Exception as exc:
             logger.warning(
-                "[Chat] Could not load Sarvam-1-VL model: %s. Falling back to Mock Responder.",
+                "[Chat] Could not load Ultravox pipeline: %s. Falling back to Mock Responder.",
                 exc
             )
             _model_failed = True
-            return None, None
+            return None
 
 
 # ---------------------------------------------------------------------------
-# Multilingual Mock Responder for Offline / Test Use
+# Multilingual Mock Responder
 # ---------------------------------------------------------------------------
 
 _MOCK_RESPONSES = {
     "ta": [
         {
+            "user_transcript": "வணக்கம், நீங்கள் யார்?",
             "native_text": "வணக்கம், நான் உங்கள் ஏஐ உதவியாளர். இன்று உங்களுக்கு நான் எப்படி உதவ வேண்டும்?",
             "romanized_text": "Vanakkam, naan ungal AI udhaviyaalar. Indru ungalukku naan eppadi udhava veendum?"
         },
         {
-            "native_text": "நன்றாக இருக்கிறது! உங்கள் கேள்விக்கு பதில் அளிக்க நான் தயாராக இருக்கிறேன்.",
-            "romanized_text": "Nandraaga irukkiradhu! Ungal keelvikku badhil alikka naan thayaaraaga irukkireen."
-        },
-        {
-            "native_text": "மன்னிக்கவும், எனக்கு அது சரியாக புரியவில்லை. மீண்டும் ஒருமுறை சொல்ல முடியுமா?",
-            "romanized_text": "Mannikkavum, enakku adhu sariyaaga puriyavillai. Meendum orumurai solla mudiyuma?"
+            "user_transcript": "எப்படி இருக்கிறீர்கள்?",
+            "native_text": "நான் நன்றாக இருக்கிறேன்! உங்கள் கேள்விக்கு பதில் அளிக்க நான் தயாராக இருக்கிறேன்.",
+            "romanized_text": "Naan nandraaga irukkireen! Ungal keelvikku badhil alikka naan thayaaraaga irukkireen."
         }
     ],
     "hi": [
         {
+            "user_transcript": "नमस्ते, आप कौन हैं?",
             "native_text": "नमस्ते, मैं आपका एआई सहायक हूँ। आज मैं आपकी कैसे मदद कर सकता हूँ?",
             "romanized_text": "Namaste, main aapka AI sahayak hoon. Aaj main aapki kaise madad kar sakta hoon?"
         },
         {
-            "native_text": "यह एक बहुत अच्छा सवाल है। मुझे इसके बारे में और बताएं।",
-            "romanized_text": "Yeh ek bahut achha sawal hai. Mujhe iske baare mein aur batayein."
-        },
-        {
-            "native_text": "क्षमा करें, मुझे समझ नहीं आया। क्या आप फिर से कह सकते हैं?",
-            "romanized_text": "Kshama karein, mujhe samajh nahi aaya. Kya aap phir se keh sakte hain?"
+            "user_transcript": "आप कैसे हैं?",
+            "native_text": "मैं बहुत अच्छा हूँ। मुझे इसके बारे में और बताएं।",
+            "romanized_text": "Main bahut achha hoon. Mujhe iske baare mein aur batayein."
         }
     ],
     "te": [
         {
+            "user_transcript": "నమస్కారం, మీరు ఎవరు?",
             "native_text": "నమస్కారం, నేను మీ ఏఐ సహాయకుడిని. ఈరోజు నేను మీకు ఎలా సహాయపడగలను?",
             "romanized_text": "Namaskaram, nenu mee AI sahayakudini. Eeroju nenu meeku ela sahayapadagalanu?"
         },
         {
-            "native_text": "చాలా సంతోషం! మీతో మాట్లాడటం నాకు చాలా ఆనందంగా ఉంది.",
-            "romanized_text": "Chaala santhosham! Meethoo maatlaadatam naaku chaala aanandangaa undhi."
-        },
-        {
-            "native_text": "నన్ను క్షమించండి, నాకు అర్థం కాలేదు. దయచేసి మళ్ళీ చెప్పండి?",
-            "romanized_text": "Nannu kshaminchandi, naaku artham kaaledhu. Dayachesi mallee cheppandi?"
+            "user_transcript": "ఎలా ఉన్నారు?",
+            "native_text": "నేను చాలా బాగున్నాను! మీతో మాట్లాడటం నాకు చాలా సంతోషంగా ఉంది.",
+            "romanized_text": "Nenu chaala baagunnaanu! Meethoo maatlaadatam naaku chaala santhoshangaa undhi."
         }
     ],
     "en": [
         {
+            "user_transcript": "Hello, who are you?",
             "native_text": "Hello, I am your AI assistant. How can I help you today?",
             "romanized_text": "Hello, I am your AI assistant. How can I help you today?"
         },
         {
-            "native_text": "That is a very interesting question. Please tell me more about it.",
-            "romanized_text": "That is a very interesting question. Please tell me more about it."
-        },
-        {
-            "native_text": "I am sorry, I did not catch that. Could you repeat it?",
-            "romanized_text": "I am sorry, I did not catch that. Could you repeat it?"
+            "user_transcript": "How are you doing?",
+            "native_text": "I am doing great. Please tell me more about it.",
+            "romanized_text": "I am doing great. Please tell me more about it."
         }
     ]
 }
@@ -150,7 +141,7 @@ def _detect_language(text: str) -> str:
 
 
 def get_mock_response(user_text: str) -> Dict[str, str]:
-    """Generates an aligned mock dual-text response based on input language."""
+    """Generates an aligned mock response (transcription + reply) based on language."""
     import random
     lang = _detect_language(user_text)
     responses = _MOCK_RESPONSES.get(lang, _MOCK_RESPONSES["en"])
@@ -158,27 +149,142 @@ def get_mock_response(user_text: str) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Core Response Generation
+# Helper output extractors
+# ---------------------------------------------------------------------------
+
+def _extract_text_from_output(output) -> str:
+    """Robustly extracts output text from transformers pipeline results."""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, dict):
+        if "text" in output:
+            return output["text"]
+        if "generated_text" in output:
+            return output["generated_text"]
+    if isinstance(output, list) and len(output) > 0:
+        return _extract_text_from_output(output[0])
+    return str(output)
+
+
+def _parse_json_response(raw_text: str) -> Optional[Dict[str, str]]:
+    """Cleans up markdown ticks and parses the JSON response."""
+    clean = raw_text.strip()
+    if clean.startswith("```"):
+        lines = clean.split("\n")
+        if lines[0].startswith("```json") or lines[0].startswith("```"):
+            lines = lines[1:-1]
+        clean = "\n".join(lines).strip()
+    try:
+        return json.loads(clean)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Multimodal Audio Response Generation
+# ---------------------------------------------------------------------------
+
+async def get_response_from_audio(audio_np: np.ndarray) -> Dict[str, str]:
+    """
+    Consumes raw 16kHz float32 audio and generates a unified response payload
+    containing: 'user_transcript', 'native_text', and 'romanized_text'.
+    """
+    pipe = await load_chat_model()
+    if pipe is None:
+        logger.info("[Chat-Audio] Model not active, using English Mock Response")
+        return get_mock_response("")
+
+    try:
+        system_prompt = (
+            "You are a helpful multilingual talking avatar assistant.\n"
+            "Listen to the user's speech in this audio, transcribe it, and generate your conversational response in the user's language.\n"
+            "Format your output as a JSON object containing exactly three keys:\n"
+            "1. 'user_transcript': The transcription of what the user said in the native script.\n"
+            "2. 'native_text': Your reply to the user in the native script.\n"
+            "3. 'romanized_text': The phonetically equivalent Romanized transliteration of 'native_text'.\n\n"
+            "CRITICAL RULES:\n"
+            "- If the user spoke in English, user_transcript, native_text, and romanized_text must all be in English (and romanized_text must be identical to native_text).\n"
+            "- 'native_text' and 'romanized_text' must feature the identical amount of words.\n"
+            "- Punctuation flags and grammatical cadence between 'native_text' and 'romanized_text' must match directly.\n"
+            "- Only return valid JSON. Do not write markdown tags (like ```json ... ```) or any extra conversational filler."
+        )
+
+        turns = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "<|audio|>"}
+        ]
+
+        loop = asyncio.get_event_loop()
+        raw_output = await loop.run_in_executor(
+            None,
+            _run_ultravox_inference,
+            pipe,
+            audio_np,
+            turns
+        )
+
+        output_text = _extract_text_from_output(raw_output)
+        payload = _parse_json_response(output_text)
+
+        if payload and "user_transcript" in payload and "native_text" in payload and "romanized_text" in payload:
+            return payload
+
+        # Fallback if structure is malformed
+        logger.warning("[Chat-Audio] Output was not in valid schema: %r", output_text)
+        return {
+            "user_transcript": "User speech detected",
+            "native_text": output_text,
+            "romanized_text": output_text
+        }
+
+    except Exception as exc:
+        logger.exception("[Chat-Audio] Inference failed: %s", exc)
+        return get_mock_response("")
+
+
+def _run_ultravox_inference(pipe, audio: np.ndarray, turns: List[Dict[str, str]]) -> str:
+    """Executes Ultravox pipeline synchronously in the executor thread pool."""
+    try:
+        return pipe(
+            {'audio': audio, 'turns': turns, 'sampling_rate': 16000},
+            max_new_tokens=256
+        )
+    except Exception as e:
+        logger.warning("[Chat-Audio] System role execution failed, merging system prompt: %s", e)
+        system_content = next((t["content"] for t in turns if t["role"] == "system"), "")
+        user_content = next((t["content"] for t in turns if t["role"] == "user"), "")
+        merged_turns = [
+            {"role": "user", "content": f"{system_content}\n\n{user_content}"}
+        ]
+        return pipe(
+            {'audio': audio, 'turns': merged_turns, 'sampling_rate': 16000},
+            max_new_tokens=256
+        )
+
+
+# ---------------------------------------------------------------------------
+# Text-Only Chat Generation (for /chat HTTP endpoint)
 # ---------------------------------------------------------------------------
 
 async def get_response(user_text: str) -> Dict[str, str]:
     """
-    Evaluates query and converts response into a custom structured JSON
-    with matched 1:1 structural layout ('native_text' and 'romanized_text').
+    Text-only conversational interface using the same Ultravox model
+    (falling back to Llama-3.1 text-only mode).
     """
     if not user_text.strip():
         return {"native_text": "", "romanized_text": ""}
 
-    model, processor = await load_chat_model()
-    if model is None or processor is None:
-        logger.info("[Chat] Model not active, using Mock Responder")
+    pipe = await load_chat_model()
+    if pipe is None:
+        logger.info("[Chat-Text] Model not active, using Mock Responder")
         return get_mock_response(user_text)
 
     try:
         system_prompt = (
             "You are a helpful multilingual talking avatar assistant.\n"
-            "Respond in the user's language, and format your output as a JSON object containing exactly two keys:\n"
-            "1. 'native_text': The response in the native script (e.g. Tamil, Hindi, Telugu, or English).\n"
+            "Respond to the user's message in the user's language.\n"
+            "Format your output as a JSON object containing exactly two keys:\n"
+            "1. 'native_text': Your response in the native script (e.g. Tamil, Hindi, Telugu, or English).\n"
             "2. 'romanized_text': The phonetically equivalent Romanized transliteration of the native text.\n\n"
             "CRITICAL RULES:\n"
             "- If the user query is in English, both native_text and romanized_text must be the identical English sentence.\n"
@@ -188,67 +294,51 @@ async def get_response(user_text: str) -> Dict[str, str]:
             "- Only return valid JSON. Do not write markdown tags (like ```json ... ```) or any extra conversational filler."
         )
 
-        messages = [
+        turns = [
             {"role": "system", "content": system_prompt},
-            # Few-shot English
-            {"role": "user", "content": "Hello! Who are you?"},
-            {"role": "assistant", "content": '{"native_text": "Hello, I am your AI assistant.", "romanized_text": "Hello, I am your AI assistant."}'},
-            # Few-shot Tamil
-            {"role": "user", "content": "வணக்கம், நீங்கள் யார்?"},
-            {"role": "assistant", "content": '{"native_text": "வணக்கம், நான் உங்கள் ஏஐ உதவியாளர்.", "romanized_text": "Vanakkam, naan ungal AI udhaviyaalar."}'},
-            # Few-shot Hindi
-            {"role": "user", "content": "नमस्ते, आप कौन हैं?"},
-            {"role": "assistant", "content": '{"native_text": "नमस्ते, मैं आपका एआई सहायक हूँ।", "romanized_text": "Namaste, main aapka AI sahayak hoon."}'},
-            # Actual query
             {"role": "user", "content": user_text}
         ]
 
-        text_prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
         loop = asyncio.get_event_loop()
-        raw_response = await loop.run_in_executor(
+        raw_output = await loop.run_in_executor(
             None,
-            _run_inference,
-            model,
-            processor,
-            text_prompt
+            _run_ultravox_text_inference,
+            pipe,
+            turns
         )
 
-        # Parse structured output
-        clean_response = raw_response.strip()
-        if clean_response.startswith("```"):
-            lines = clean_response.split("\n")
-            if lines[0].startswith("```json") or lines[0].startswith("```"):
-                lines = lines[1:-1]
-            clean_response = "\n".join(lines).strip()
+        output_text = _extract_text_from_output(raw_output)
+        payload = _parse_json_response(output_text)
 
-        try:
-            payload = json.loads(clean_response)
-            if isinstance(payload, dict) and "native_text" in payload and "romanized_text" in payload:
-                return payload
-        except (json.JSONDecodeError, TypeError) as parse_err:
-            logger.warning("[Chat] Failed to parse JSON response: %s. Raw response: %r", parse_err, raw_response)
+        if payload and "native_text" in payload and "romanized_text" in payload:
+            return payload
 
         # Fallback if structure is malformed
         return {
-            "native_text": raw_response,
-            "romanized_text": raw_response
+            "native_text": output_text,
+            "romanized_text": output_text
         }
 
     except Exception as exc:
-        logger.exception("[Chat] Failed to generate response from model: %s", exc)
+        logger.exception("[Chat-Text] Text inference failed: %s", exc)
         return get_mock_response(user_text)
 
 
-def _run_inference(model, processor, text_prompt: str) -> str:
-    """Synchronous model execution run in executor thread."""
-    inputs = processor(text=[text_prompt], return_tensors="pt").to(model.device)
-    with torch.inference_mode():
-        outputs = model.generate(**inputs, max_new_tokens=128, use_cache=True)
-    
-    # Decodes only the newly generated token IDs
-    generated_ids = [
-        output_ids[len(input_ids):]
-        for input_ids, output_ids in zip(inputs.input_ids, outputs)
-    ]
-    return processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+def _run_ultravox_text_inference(pipe, turns: List[Dict[str, str]]) -> str:
+    """Executes Ultravox text-only generation synchronously."""
+    try:
+        return pipe(
+            {'turns': turns},
+            max_new_tokens=256
+        )
+    except Exception as e:
+        logger.warning("[Chat-Text] System role execution failed, merging system prompt: %s", e)
+        system_content = next((t["content"] for t in turns if t["role"] == "system"), "")
+        user_content = next((t["content"] for t in turns if t["role"] == "user"), "")
+        merged_turns = [
+            {"role": "user", "content": f"{system_content}\n\n{user_content}"}
+        ]
+        return pipe(
+            {'turns': merged_turns},
+            max_new_tokens=256
+        )

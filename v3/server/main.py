@@ -39,8 +39,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from chat import get_response
-from stt_engine import AudioBuffer, get_whisper, transcribe
+from chat import get_response, get_response_from_audio
+from stt_engine import AudioBuffer
 from tts_engine import get_model, synthesize_stream
 
 logging.basicConfig(
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("[Server] Warming up models …")
     from chat import load_chat_model
-    await asyncio.gather(get_model(), get_whisper(), load_chat_model())
+    await asyncio.gather(get_model(), load_chat_model())
     logger.info("[Server] All models ready – accepting connections")
     yield
     logger.info("[Server] Shutdown")
@@ -225,36 +225,25 @@ async def ws_stt(websocket: WebSocket):
                         await _send_json(websocket, {"type": "status", "data": "stopped"})
                         continue
 
-                    # 1. Transcribe full buffer
-                    await _send_json(websocket, {"type": "status", "data": "transcribing"})
-                    transcript = await transcribe(audio, language=language)
+                    # 1. Feed audio directly to Ultravox model
+                    await _send_json(websocket, {"type": "status", "data": "thinking"})
+                    response = await get_response_from_audio(audio)
 
-                    if not transcript:
-                        await _send_json(websocket, {"type": "status", "data": "stopped"})
-                        continue
+                    # 2. Extract transcript and reply
+                    transcript = response.get("user_transcript", "")
+                    native_reply = response.get("native_text", "")
+                    romanized_reply = response.get("romanized_text", "")
 
-                    # 2. Send transcript back (what the user said)
+                    # 3. Send transcript back (what the user said)
                     await _send_json(websocket, {"type": "transcript", "text": transcript})
 
-                    # 3. Generate reply
-                    await _send_json(websocket, {"type": "status", "data": "thinking"})
-                    reply = await get_response(transcript)
-
                     # 4. Send reply (what the avatar will say)
-                    if isinstance(reply, dict):
-                        await _send_json(websocket, {
-                            "type": "reply",
-                            "text": reply.get("native_text", ""),
-                            "native_text": reply.get("native_text", ""),
-                            "romanized_text": reply.get("romanized_text", "")
-                        })
-                    else:
-                        await _send_json(websocket, {
-                            "type": "reply",
-                            "text": str(reply),
-                            "native_text": str(reply),
-                            "romanized_text": str(reply)
-                        })
+                    await _send_json(websocket, {
+                        "type": "reply",
+                        "text": native_reply,
+                        "native_text": native_reply,
+                        "romanized_text": romanized_reply
+                    })
                     await _send_json(websocket, {"type": "status", "data": "stopped"})
 
                 # cancel — discard buffer without transcribing

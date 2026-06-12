@@ -34,14 +34,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY server/ ./
 
 # Pre-download/cache model weights during the build process so they are baked in
-# 1. Whisper Model: large-v3-turbo (approx. 1.6 GB)
-RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')"
-
-# 2. OmniVoice Model: k2-fsa/OmniVoice (approx. 2.4 GB)
+# 1. OmniVoice Model: k2-fsa/OmniVoice (approx. 2.4 GB)
 RUN python3 -c "from omnivoice import OmniVoice; import torch; OmniVoice.from_pretrained('k2-fsa/OmniVoice', device_map='cpu', dtype=torch.float32)"
 
-# 3. Chat Model: mashriram/Sarvam-1-VL-4B-Instruct-VLLM (approx. 8 GB)
-RUN python3 -c "from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor; Qwen3VLProcessor.from_pretrained('mashriram/Sarvam-1-VL-4B-Instruct-VLLM'); Qwen3VLForConditionalGeneration.from_pretrained('mashriram/Sarvam-1-VL-4B-Instruct-VLLM')"
+# 2. Multimodal Chat Model: fixie-ai/ultravox-v0_6-llama-3_1-8b (approx. 16 GB)
+RUN python3 -c "import transformers; transformers.pipeline(model='fixie-ai/ultravox-v0_6-llama-3_1-8b', trust_remote_code=True)"
 
 # Expose backend FastAPI port
 EXPOSE 8765

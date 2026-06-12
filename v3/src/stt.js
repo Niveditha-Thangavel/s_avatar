@@ -155,7 +155,7 @@ export class STTManager {
         break;
 
       case 'reply':
-        this._emit('reply', msg.text);
+        this._emit('reply', msg);
         break;
 
       case 'status':

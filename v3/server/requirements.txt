@@ -15,12 +15,10 @@ pydantic==2.11.4
 omnivoice==0.1.5
 soundfile==0.12.1
 
-# STT – faster-whisper (ships with its own Silero VAD v6)
-faster-whisper==1.1.1
-
-# numpy pinned for compatibility with both omnivoice and faster-whisper
+# numpy pinned for compatibility with both omnivoice
 numpy==1.26.4
 
-# LLM – transformers & accelerate for Sarvam-1-VL
+# LLM – transformers, accelerate, and peft for Ultravox
 transformers>=4.45.0
 accelerate>=0.30.0
+peft>=0.12.0
