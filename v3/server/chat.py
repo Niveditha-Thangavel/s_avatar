@@ -40,51 +40,13 @@ async def load_chat_model() -> Optional[object]:
 
         try:
             logger.info("[Chat] Loading Ultravox model '%s' ...", MODEL_ID)
-            # 1. MUST import and patch dynamic_module_utils BEFORE importing transformers
-            import transformers.dynamic_module_utils
-            original_get_class_from_dynamic_module = transformers.dynamic_module_utils.get_class_from_dynamic_module
-
-            def custom_get_class_from_dynamic_module(*args, **kwargs):
-                cls = original_get_class_from_dynamic_module(*args, **kwargs)
-                if cls and hasattr(cls, "tie_weights") and "Ultravox" in cls.__name__ and not hasattr(cls, "_tie_weights_patched"):
-                    original_tie_weights = cls.tie_weights
-                    def wrapped_tie_weights(self, *args, **kwargs):
-                        try:
-                            return original_tie_weights(self)
-                        except Exception as e:
-                            raise e
-                    cls.tie_weights = wrapped_tie_weights
-                    cls._tie_weights_patched = True
-                return cls
-
-            transformers.dynamic_module_utils.get_class_from_dynamic_module = custom_get_class_from_dynamic_module
-
-            # Apply the patch to all potential auto classes in transformers immediately (before transformers is imported)
-            # This handles any lazy loading mechanisms safely
-            modules_to_patch = [
-                "transformers.dynamic_module_utils",
-                "transformers.models.auto.auto_factory",
-                "transformers.models.auto.modeling_auto",
-                "transformers.models.auto.tokenization_auto",
-                "transformers.models.auto.processing_auto",
-                "transformers.models.auto.configuration_auto",
-            ]
-            for module_name in modules_to_patch:
-                try:
-                    mod = __import__(module_name, fromlist=["get_class_from_dynamic_module"])
-                    if hasattr(mod, "get_class_from_dynamic_module"):
-                        setattr(mod, "get_class_from_dynamic_module", custom_get_class_from_dynamic_module)
-                except Exception:
-                    pass
-
-            # 2. Now import transformers
             import transformers
 
-            # Monkey-patch to fix library version incompatibility with Ultravox custom weight init
+            # 1. Monkey-patch _init_weights to True to let Ultravox instantiate the language model
             if not hasattr(transformers.modeling_utils, "_init_weights"):
                 transformers.modeling_utils._init_weights = True
 
-            # Monkey-patch check_and_set_device_map to bypass meta device context check errors
+            # 2. Monkey-patch check_and_set_device_map to bypass meta device context check errors
             try:
                 transformers.modeling_utils.check_and_set_device_map = lambda x: x
             except Exception:
@@ -95,7 +57,7 @@ async def load_chat_model() -> Optional[object]:
             except Exception:
                 pass
 
-            # Monkey-patch PreTrainedModel._initialize_weights to bypass meta tensor copy/fill errors during initialization
+            # 3. Monkey-patch PreTrainedModel._initialize_weights to bypass meta tensor copy/fill errors during initialization
             try:
                 original_initialize_weights = transformers.modeling_utils.PreTrainedModel._initialize_weights
                 def safe_initialize_weights(self, module, *args, **kwargs):
@@ -114,6 +76,25 @@ async def load_chat_model() -> Optional[object]:
                         else:
                             raise
                 transformers.modeling_utils.PreTrainedModel._initialize_weights = safe_initialize_weights
+            except Exception:
+                pass
+
+            # 4. Monkey-patch PreTrainedModel.init_weights to wrap the instance's tie_weights method dynamically.
+            # This bypasses the TypeError: UltravoxModel.tie_weights() got an unexpected keyword argument 'recompute_mapping'
+            # introduced in newer transformers versions.
+            try:
+                original_init_weights = transformers.modeling_utils.PreTrainedModel.init_weights
+                def safe_init_weights(self, *args, **kwargs):
+                    if hasattr(self, "tie_weights"):
+                        original_tie_weights = self.tie_weights
+                        def wrapped_tie_weights(*args, **kwargs):
+                            try:
+                                return original_tie_weights()
+                            except TypeError:
+                                return original_tie_weights(*args, **kwargs)
+                        self.tie_weights = wrapped_tie_weights
+                    return original_init_weights(self, *args, **kwargs)
+                transformers.modeling_utils.PreTrainedModel.init_weights = safe_init_weights
             except Exception:
                 pass
 
