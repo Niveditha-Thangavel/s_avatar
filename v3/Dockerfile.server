@@ -4,6 +4,10 @@ FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Add Hugging Face Token as a build argument for downloading gated models (e.g., Llama-3.1)
+ARG HF_TOKEN
+ENV HF_TOKEN=$HF_TOKEN
+
 # Force Python logs to write directly to stdout (useful for container logs)
 ENV PYTHONUNBUFFERED=1
 

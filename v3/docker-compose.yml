@@ -18,6 +18,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
+      args:
+        - HF_TOKEN=${HF_TOKEN}
     container_name: voice-avatar-server
     ports:
       - "8765:8765"
