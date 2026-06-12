@@ -41,6 +41,9 @@ async def load_chat_model() -> Optional[object]:
         try:
             logger.info("[Chat] Loading Ultravox model '%s' ...", MODEL_ID)
             import transformers
+            # Monkey-patch to fix library version incompatibility with Ultravox custom weight init
+            if not hasattr(transformers.modeling_utils, "_init_weights"):
+                transformers.modeling_utils._init_weights = True
 
             # Determine best device (MPS for Apple Silicon, CUDA for GPU, otherwise CPU)
             device = "cpu"
