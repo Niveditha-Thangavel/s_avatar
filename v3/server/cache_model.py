@@ -1,6 +1,47 @@
+import sys
+
+# MUST import and patch dynamic_module_utils BEFORE importing other transformers modules,
+# so that any auto-factories import the patched version directly.
+import transformers.dynamic_module_utils
+original_get_class_from_dynamic_module = transformers.dynamic_module_utils.get_class_from_dynamic_module
+
+def custom_get_class_from_dynamic_module(*args, **kwargs):
+    cls = original_get_class_from_dynamic_module(*args, **kwargs)
+    if cls and hasattr(cls, "tie_weights") and "Ultravox" in cls.__name__ and not hasattr(cls, "_tie_weights_patched"):
+        original_tie_weights = cls.tie_weights
+        def wrapped_tie_weights(self, *args, **kwargs):
+            try:
+                return original_tie_weights(self)
+            except Exception as e:
+                raise e
+        cls.tie_weights = wrapped_tie_weights
+        cls._tie_weights_patched = True
+    return cls
+
+transformers.dynamic_module_utils.get_class_from_dynamic_module = custom_get_class_from_dynamic_module
+
+# Apply the patch to all potential auto classes in transformers immediately
+# This handles any lazy loading mechanisms safely
+modules_to_patch = [
+    "transformers.dynamic_module_utils",
+    "transformers.models.auto.auto_factory",
+    "transformers.models.auto.modeling_auto",
+    "transformers.models.auto.tokenization_auto",
+    "transformers.models.auto.processing_auto",
+    "transformers.models.auto.configuration_auto",
+]
+
+for module_name in modules_to_patch:
+    try:
+        mod = __import__(module_name, fromlist=["get_class_from_dynamic_module"])
+        if hasattr(mod, "get_class_from_dynamic_module"):
+            setattr(mod, "get_class_from_dynamic_module", custom_get_class_from_dynamic_module)
+    except Exception:
+        pass
+
+# Now import the rest of the modules safely
 import transformers.modeling_utils
 import transformers.integrations.accelerate
-import transformers.dynamic_module_utils
 
 # 1. Monkey-patch _init_weights to True to let Ultravox instantiate the language model
 transformers.modeling_utils._init_weights = True
@@ -35,42 +76,6 @@ def safe_initialize_weights(self, module, *args, **kwargs):
             raise
 
 transformers.modeling_utils.PreTrainedModel._initialize_weights = safe_initialize_weights
-
-# 4. Monkey-patch get_class_from_dynamic_module to wrap dynamic model class's tie_weights method.
-# Newer transformers versions call self.tie_weights(recompute_mapping=False) inside init_weights(),
-# but UltravoxModel overrides tie_weights(self) with no additional parameters, causing a TypeError.
-original_get_class_from_dynamic_module = transformers.dynamic_module_utils.get_class_from_dynamic_module
-
-def custom_get_class_from_dynamic_module(*args, **kwargs):
-    cls = original_get_class_from_dynamic_module(*args, **kwargs)
-    if cls and hasattr(cls, "tie_weights") and "Ultravox" in cls.__name__ and not hasattr(cls, "_tie_weights_patched"):
-        original_tie_weights = cls.tie_weights
-        def wrapped_tie_weights(self, *args, **kwargs):
-            try:
-                return original_tie_weights(self)
-            except Exception as e:
-                raise e
-        cls.tie_weights = wrapped_tie_weights
-        cls._tie_weights_patched = True
-    return cls
-
-# Apply the patch to all potential importer namespaces in transformers auto classes
-modules_to_patch = [
-    "transformers.dynamic_module_utils",
-    "transformers.models.auto.auto_factory",
-    "transformers.models.auto.modeling_auto",
-    "transformers.models.auto.tokenization_auto",
-    "transformers.models.auto.processing_auto",
-    "transformers.models.auto.configuration_auto",
-]
-
-for module_name in modules_to_patch:
-    try:
-        mod = __import__(module_name, fromlist=["get_class_from_dynamic_module"])
-        if hasattr(mod, "get_class_from_dynamic_module"):
-            setattr(mod, "get_class_from_dynamic_module", custom_get_class_from_dynamic_module)
-    except Exception:
-        pass
 
 import transformers
 print("[Cache] Pre-downloading and caching fixie-ai/ultravox-v0_6-llama-3_1-8b model...")
