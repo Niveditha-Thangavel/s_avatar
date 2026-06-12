@@ -127,6 +127,7 @@ async def get_model():
 
 async def synthesize_stream(
     text: str,
+    romanized_text: Optional[str] = None,
     ref_audio: Optional[str] = None,
     ref_text:  Optional[str] = None,
     instruct:  Optional[str] = None,
@@ -136,9 +137,10 @@ async def synthesize_stream(
     """
     Async generator – yields one dict per sentence:
     {
-        "audio":       bytes,   # raw float32-le PCM, mono, 24 kHz
-        "sample_rate": int,     # 24000
-        "text":        str,     # the sentence fragment
+        "audio":          bytes,   # raw float32-le PCM, mono, 24 kHz
+        "sample_rate":    int,     # 24000
+        "text":           str,     # the native sentence fragment
+        "romanized_text": str,     # the matching romanized sentence fragment
     }
 
     Priority:
@@ -158,12 +160,24 @@ async def synthesize_stream(
         logger.info("[TTS] Using default ref audio: %s", resolved_ref)
 
     sentences = _split_sentences(text)
+    rom_sentences = _split_sentences(romanized_text) if romanized_text else []
+    
+    # Align romanized sentences to native sentences
+    aligned_rom_sentences = []
+    for i in range(len(sentences)):
+        if i < len(rom_sentences):
+            aligned_rom_sentences.append(rom_sentences[i])
+        else:
+            aligned_rom_sentences.append(sentences[i])
+
     loop      = asyncio.get_event_loop()
 
-    for sentence in sentences:
+    for idx, sentence in enumerate(sentences):
         sentence = sentence.strip()
         if not sentence:
             continue
+
+        rom_sentence = aligned_rom_sentences[idx] if idx < len(aligned_rom_sentences) else sentence
 
         audio_np: Optional[np.ndarray] = await loop.run_in_executor(
             None,
@@ -182,9 +196,10 @@ async def synthesize_stream(
             continue
 
         yield {
-            "audio":       audio_np.astype(np.float32).tobytes(),
-            "sample_rate": SAMPLE_RATE,
-            "text":        sentence,
+            "audio":          audio_np.astype(np.float32).tobytes(),
+            "sample_rate":    SAMPLE_RATE,
+            "text":           sentence,
+            "romanized_text": rom_sentence,
         }
 
 

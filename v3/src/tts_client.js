@@ -52,10 +52,10 @@ export class TTSClient {
   /**
    * Send a speak request. Awaits connection if needed.
    */
-  async speak({ text, voice = null, instruct = null, speed = 1.0, numStep = 16 }) {
+  async speak({ text, romanizedText = null, voice = null, instruct = null, speed = 1.0, numStep = 16 }) {
     await this.connect();
     this.ws.send(
-      JSON.stringify({ type: 'speak', text, voice, instruct, speed, numStep })
+      JSON.stringify({ type: 'speak', text, romanized_text: romanizedText, voice, instruct, speed, numStep })
     );
     this._emit('statusChange', 'generating');
   }
@@ -80,7 +80,12 @@ export class TTSClient {
       this._pendingChunkHeader = null;
 
       const audio = new Float32Array(event.data);
-      this._emit('chunk', { audio, sampleRate: header.sampleRate, text: header.text });
+      this._emit('chunk', {
+        audio,
+        sampleRate: header.sampleRate,
+        text: header.text,
+        romanized_text: header.romanized_text
+      });
       return;
     }
 
@@ -95,7 +100,11 @@ export class TTSClient {
     switch (msg.type) {
       case 'chunk':
         // Store header; next message will be binary PCM
-        this._pendingChunkHeader = { text: msg.text, sampleRate: msg.sampleRate };
+        this._pendingChunkHeader = {
+          text: msg.text,
+          romanized_text: msg.romanized_text,
+          sampleRate: msg.sampleRate
+        };
         break;
 
       case 'status':

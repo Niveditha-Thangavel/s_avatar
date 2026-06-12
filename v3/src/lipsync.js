@@ -1,6 +1,7 @@
 /**
  * LipSyncManager handles Web Audio API playback queuing,
- * phoneme-to-viseme mapping, and timing synchronization.
+ * phoneme-to-viseme mapping, character-ratio timeline playing,
+ * and timing synchronization.
  */
 export class LipSyncManager {
   constructor() {
@@ -16,9 +17,13 @@ export class LipSyncManager {
     this.isBuffering = true;
     this.bufferThreshold = 1;
     
-    // Timeline of scheduled phonemes
+    // Timeline of scheduled phonemes (for standard text fallback)
     // Each entry: { startTime, endTime, targetVisemes }
     this.phonemeTimeline = [];
+
+    // Queue of scheduled audio chunks (for Character-Ratio Sync Engine)
+    // Each entry: { startTime, endTime, duration, romanizedText }
+    this.playingChunks = [];
 
     // Active scheduled audio source nodes (to allow stopping them immediately on interruption)
     this.activeSources = [];
@@ -61,7 +66,24 @@ export class LipSyncManager {
       viseme_U: 0.0
     };
 
-    // Phoneme categories and mapping weights
+    // Regex lookup map for deterministic viseme morphing based on active Romanized syllable
+    this.visemeRegexMap = [
+      { regex: /[mpb]/i, viseme: 'viseme_PP' },
+      { regex: /[fv]/i, viseme: 'viseme_FF' },
+      { regex: /th/i, viseme: 'viseme_TH' },
+      { regex: /[tdn]/i, viseme: 'viseme_DD' },
+      { regex: /[kg]/i, viseme: 'viseme_kk' },
+      { regex: /(ch|sh|j)/i, viseme: 'viseme_CH' },
+      { regex: /[sz]/i, viseme: 'viseme_SS' },
+      { regex: /[r]/i, viseme: 'viseme_RR' },
+      { regex: /(aa|a)/i, viseme: 'viseme_aa' },
+      { regex: /(ee|e)/i, viseme: 'viseme_E' },
+      { regex: /(ii|i)/i, viseme: 'viseme_I' },
+      { regex: /(oo|o)/i, viseme: 'viseme_O' },
+      { regex: /(uu|u|w)/i, viseme: 'viseme_U' }
+    ];
+
+    // Phoneme categories and mapping weights (for traditional IPA fallback)
     this.phonemeWeights = {
       // Vowels & Diphthongs (Longer, open mouth)
       'a': 1.5, 'e': 1.4, 'i': 1.3, 'o': 1.5, 'u': 1.5,
@@ -125,6 +147,7 @@ export class LipSyncManager {
     }
 
     this.phonemeTimeline = [];
+    this.playingChunks = [];
     this.isPlaying = false;
     this.isBuffering = true; // Reset back to buffering state for next speak
     this.chunkQueue = [];
@@ -166,7 +189,49 @@ export class LipSyncManager {
   }
 
   /**
-   * Maps an IPA character to target viseme blendshapes
+   * Rules-based Syllable Parser for Romanized text.
+   * Splits a word into consonant-vowel syllable blocks.
+   */
+  splitIntoSyllables(word) {
+    const pattern = /[^aeiou]*[aeiou]+(?:[^aeiou](?![aeiou]))*/gi;
+    const matches = word.match(pattern);
+    return matches || [word];
+  }
+
+  /**
+   * Maps a Romanized syllable block to target visemes via Regex lookup.
+   */
+  mapSyllableToVisemes(syllable) {
+    const defaultVisemes = {
+      viseme_sil: 1.0, viseme_PP: 0.0, viseme_FF: 0.0, viseme_TH: 0.0,
+      viseme_DD: 0.0, viseme_kk: 0.0, viseme_CH: 0.0, viseme_SS: 0.0,
+      viseme_nn: 0.0, viseme_RR: 0.0, viseme_aa: 0.0, viseme_E: 0.0,
+      viseme_I: 0.0, viseme_O: 0.0, viseme_U: 0.0
+    };
+    
+    const visemes = { ...defaultVisemes, viseme_sil: 0.0 };
+    if (!syllable || !syllable.trim()) {
+      visemes.viseme_sil = 1.0;
+      return visemes;
+    }
+
+    let matched = false;
+    for (const item of this.visemeRegexMap) {
+      if (item.regex.test(syllable)) {
+        visemes[item.viseme] = 1.0;
+        matched = true;
+        break;
+      }
+    }
+
+    if (!matched) {
+      visemes.viseme_sil = 1.0;
+    }
+    return visemes;
+  }
+
+  /**
+   * Maps an IPA character to target viseme blendshapes (fallback)
    */
   mapPhonemeToVisemes(char) {
     const defaultVisemes = {
@@ -228,7 +293,7 @@ export class LipSyncManager {
       visemes.viseme_aa = 1.0;
       return visemes;
     }
-    // 11. Mid-Front Vowels (e, ɛ, œ, ø, eh)
+    // 11. Mid-Front Vowels (e, ɛ, œ, ø, eɪ', 'eh'].includes(char)) {
     if (['e', 'ɛ', 'œ', 'ø', 'eɪ', 'eh'].includes(char)) {
       visemes.viseme_E = 1.0;
       return visemes;
@@ -257,12 +322,12 @@ export class LipSyncManager {
   /**
    * Queue a new chunk of audio samples (applying pre-rolling buffer)
    */
-  queueAudioChunk(samples, samplingRate, phonemeString) {
+  queueAudioChunk(samples, samplingRate, phonemeString, romanizedText = null) {
     this.init();
     this.resume();
 
     if (this.isBuffering) {
-      this.chunkQueue.push({ samples, samplingRate, phonemeString });
+      this.chunkQueue.push({ samples, samplingRate, phonemeString, romanizedText });
       
       // Once we cross the pre-roll threshold, flush and play all contiguously
       if (this.chunkQueue.length >= this.bufferThreshold) {
@@ -270,13 +335,12 @@ export class LipSyncManager {
       }
     } else {
       // Already playing, schedule immediately
-      this.scheduleChunk(samples, samplingRate, phonemeString);
+      this.scheduleChunk(samples, samplingRate, phonemeString, romanizedText);
     }
   }
 
   /**
    * Flushes the pre-roll buffer queue and starts scheduled playback.
-   * Safe to call multiple times — drains any remaining queued chunks.
    */
   flushBuffer() {
     const tempQueue = [...this.chunkQueue];
@@ -284,20 +348,20 @@ export class LipSyncManager {
     this.isBuffering = false;
 
     tempQueue.forEach(chunk => {
-      this.scheduleChunk(chunk.samples, chunk.samplingRate, chunk.phonemeString);
+      this.scheduleChunk(chunk.samples, chunk.samplingRate, chunk.phonemeString, chunk.romanizedText);
     });
   }
 
   /**
-   * Schedules a single audio chunk and aligns its phonemes
+   * Schedules a single audio chunk and aligns its phonemes or romanized text
    */
-  scheduleChunk(samples, samplingRate, phonemeString) {
+  scheduleChunk(samples, samplingRate, phonemeString, romanizedText = null) {
     const duration = samples.length / samplingRate;
     const currentTime = this.audioCtx.currentTime;
 
     // If we've drifted behind, reset the play timeline
     if (this.nextPlayTime < currentTime) {
-      this.nextPlayTime = currentTime + 0.15; // increased safety buffer
+      this.nextPlayTime = currentTime + 0.15; // safety buffer
     }
 
     const chunkStartTime = this.nextPlayTime;
@@ -331,40 +395,50 @@ export class LipSyncManager {
       }
     };
 
-    // 4. Align phonemes precisely by trimming silent padding in audio timeline
-    const threshold = 0.002;
-    let startIdx = 0;
-    while (startIdx < samples.length && Math.abs(samples[startIdx]) < threshold) {
-      startIdx++;
-    }
-
-    if (startIdx === samples.length) {
-      // Entire chunk is silent
-      this.alignPhonemes('', chunkStartTime, duration);
+    if (romanizedText) {
+      // Use Character-Ratio Timeline Mapping
+      this.playingChunks.push({
+        startTime: chunkStartTime,
+        endTime: chunkEndTime,
+        duration: duration,
+        romanizedText: romanizedText
+      });
     } else {
-      let endIdx = samples.length - 1;
-      while (endIdx > startIdx && Math.abs(samples[endIdx]) < threshold) {
-        endIdx--;
+      // Fallback: Align phonemes precisely by trimming silent padding in audio timeline
+      const threshold = 0.002;
+      let startIdx = 0;
+      while (startIdx < samples.length && Math.abs(samples[startIdx]) < threshold) {
+        startIdx++;
       }
 
-      const leadingSilence = startIdx / samplingRate;
-      const trailingSilence = (samples.length - 1 - endIdx) / samplingRate;
-      const activeDuration = duration - leadingSilence - trailingSilence;
-
-      if (activeDuration > 0.01) {
-        // Schedule leading silence
-        if (leadingSilence > 0.01) {
-          this.alignPhonemes('', chunkStartTime, leadingSilence);
-        }
-        // Schedule active speech phonemes
-        this.alignPhonemes(phonemeString, chunkStartTime + leadingSilence, activeDuration);
-        // Schedule trailing silence
-        if (trailingSilence > 0.01) {
-          this.alignPhonemes('', chunkEndTime - trailingSilence, trailingSilence);
-        }
+      if (startIdx === samples.length) {
+        // Entire chunk is silent
+        this.alignPhonemes('', chunkStartTime, duration);
       } else {
-        // Fallback if active speech duration calculation is too small
-        this.alignPhonemes(phonemeString, chunkStartTime, duration);
+        let endIdx = samples.length - 1;
+        while (endIdx > startIdx && Math.abs(samples[endIdx]) < threshold) {
+          endIdx--;
+        }
+
+        const leadingSilence = startIdx / samplingRate;
+        const trailingSilence = (samples.length - 1 - endIdx) / samplingRate;
+        const activeDuration = duration - leadingSilence - trailingSilence;
+
+        if (activeDuration > 0.01) {
+          // Schedule leading silence
+          if (leadingSilence > 0.01) {
+            this.alignPhonemes('', chunkStartTime, leadingSilence);
+          }
+          // Schedule active speech phonemes
+          this.alignPhonemes(phonemeString, chunkStartTime + leadingSilence, activeDuration);
+          // Schedule trailing silence
+          if (trailingSilence > 0.01) {
+            this.alignPhonemes('', chunkEndTime - trailingSilence, trailingSilence);
+          }
+        } else {
+          // Fallback if active speech duration calculation is too small
+          this.alignPhonemes(phonemeString, chunkStartTime, duration);
+        }
       }
     }
 
@@ -373,9 +447,7 @@ export class LipSyncManager {
   }
 
   /**
-   * Splits a phoneme string and distributes the duration proportionally.
-   * Accepts either IPA phoneme strings or plain English text — in both cases
-   * it maps characters to approximate visemes so the mouth moves.
+   * Splits a phoneme string and distributes the duration proportionally (fallback).
    */
   alignPhonemes(phonemes, startTime, totalDuration) {
     if (!phonemes || phonemes.length === 0) {
@@ -393,7 +465,6 @@ export class LipSyncManager {
       return;
     }
 
-    // Filter out helper characters (e.g. stress marks ˈ ˌ) but use length marks (ː)
     const cleanPhonemes = [];
     for (let i = 0; i < phonemes.length; i++) {
       const char = phonemes[i];
@@ -401,7 +472,6 @@ export class LipSyncManager {
         continue;
       }
       if (char === 'ː' && cleanPhonemes.length > 0) {
-        // Double the weight of the previous phoneme instead of adding a new character
         cleanPhonemes[cleanPhonemes.length - 1].weight *= 1.8;
         continue;
       }
@@ -412,10 +482,8 @@ export class LipSyncManager {
 
     if (cleanPhonemes.length === 0) return;
 
-    // Sum all weights
     const totalWeight = cleanPhonemes.reduce((sum, item) => sum + item.weight, 0);
 
-    // Distribute duration
     let elapsed = 0;
     for (const item of cleanPhonemes) {
       const itemDuration = (item.weight / totalWeight) * totalDuration;
@@ -441,27 +509,57 @@ export class LipSyncManager {
     } else {
       const playTime = this.audioCtx.currentTime;
 
-      // Clean up past timeline events
-      this.phonemeTimeline = this.phonemeTimeline.filter(event => event.endTime >= playTime);
+      // Clean up past playing chunks
+      this.playingChunks = this.playingChunks.filter(c => c.endTime >= playTime);
 
-      // Find active phoneme event
-      const activeEvent = this.phonemeTimeline.find(
-        event => playTime >= event.startTime && playTime <= event.endTime
+      const activeChunk = this.playingChunks.find(
+        c => playTime >= c.startTime && playTime <= c.endTime
       );
 
-      if (activeEvent) {
-        // Set all visemes and targets to the active event's values
-        Object.keys(this.targets).forEach(k => {
-          this.targets[k] = activeEvent.targetVisemes[k] !== undefined ? activeEvent.targetVisemes[k] : 0.0;
-        });
+      if (activeChunk) {
+        // Character-Ratio Sync Engine: scrub active Romanized syllable
+        const elapsed = playTime - activeChunk.startTime;
+        const ratio = Math.max(0, Math.min(1, elapsed / activeChunk.duration));
+
+        const words = activeChunk.romanizedText.split(/\s+/).filter(w => w.length > 0);
+        const syllables = [];
+        for (const word of words) {
+          syllables.push(...this.splitIntoSyllables(word));
+        }
+
+        if (syllables.length > 0) {
+          const syllableIndex = Math.min(
+            syllables.length - 1,
+            Math.floor(ratio * syllables.length)
+          );
+          const activeSyllable = syllables[syllableIndex] || '';
+          const targetVisemes = this.mapSyllableToVisemes(activeSyllable);
+          
+          Object.keys(this.targets).forEach(k => {
+            this.targets[k] = targetVisemes[k] !== undefined ? targetVisemes[k] : 0.0;
+          });
+        } else {
+          this.resetTargets();
+        }
       } else {
-        // No active event, decay back to silence/neutral
-        this.resetTargets();
+        // Fallback to traditional timeline scheduling
+        this.phonemeTimeline = this.phonemeTimeline.filter(event => event.endTime >= playTime);
+
+        const activeEvent = this.phonemeTimeline.find(
+          event => playTime >= event.startTime && playTime <= event.endTime
+        );
+
+        if (activeEvent) {
+          Object.keys(this.targets).forEach(k => {
+            this.targets[k] = activeEvent.targetVisemes[k] !== undefined ? activeEvent.targetVisemes[k] : 0.0;
+          });
+        } else {
+          this.resetTargets();
+        }
       }
     }
 
-    // Smoothly interpolate current values towards targets (coarticulation / lerp)
-    // A speed of 20.0 provides natural, responsive lip motion
+    // Smoothly LERP current values towards targets
     const speed = 20.0;
     const lerpFactor = 1 - Math.exp(-speed * dt);
     

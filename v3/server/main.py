@@ -51,12 +51,13 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Startup — warm up both models concurrently
+# Startup — warm up models concurrently
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("[Server] Warming up models …")
-    await asyncio.gather(get_model(), get_whisper())
+    from chat import load_chat_model
+    await asyncio.gather(get_model(), get_whisper(), load_chat_model())
     logger.info("[Server] All models ready – accepting connections")
     yield
     logger.info("[Server] Shutdown")
@@ -88,9 +89,19 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     if not req.text.strip():
-        return {"reply": ""}
+        return {"reply": "", "native_text": "", "romanized_text": ""}
     reply = await get_response(req.text.strip())
-    return {"reply": reply}
+    if isinstance(reply, dict):
+        return {
+            "reply": reply.get("native_text", ""),
+            "native_text": reply.get("native_text", ""),
+            "romanized_text": reply.get("romanized_text", "")
+        }
+    return {
+        "reply": str(reply),
+        "native_text": str(reply),
+        "romanized_text": str(reply)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +125,11 @@ async def ws_tts(websocket: WebSocket):
             msg_type = msg.get("type")
 
             if msg_type == "speak":
-                text     = msg.get("text", "").strip()
-                instruct = msg.get("instruct") or None
-                speed    = float(msg.get("speed",   1.0))
-                num_step = int(msg.get("numStep", 16))
+                text           = msg.get("text", "").strip()
+                romanized_text = msg.get("romanized_text") or msg.get("romanizedText") or None
+                instruct       = msg.get("instruct") or None
+                speed          = float(msg.get("speed",   1.0))
+                num_step       = int(msg.get("numStep", 16))
 
                 if not text:
                     await _send_json(websocket, {"type": "error", "message": "Empty text"})
@@ -128,15 +140,17 @@ async def ws_tts(websocket: WebSocket):
                 try:
                     async for chunk in synthesize_stream(
                         text=text,
+                        romanized_text=romanized_text,
                         instruct=instruct,
                         speed=speed,
                         num_step=num_step,
                     ):
                         await _send_json(websocket, {
-                            "type":       "chunk",
-                            "text":       chunk["text"],
-                            "sampleRate": chunk["sample_rate"],
-                            "byteLength": len(chunk["audio"]),
+                            "type":          "chunk",
+                            "text":          chunk["text"],
+                            "romanized_text": chunk.get("romanized_text", ""),
+                            "sampleRate":    chunk["sample_rate"],
+                            "byteLength":    len(chunk["audio"]),
                         })
                         await websocket.send_bytes(chunk["audio"])
 
@@ -227,7 +241,20 @@ async def ws_stt(websocket: WebSocket):
                     reply = await get_response(transcript)
 
                     # 4. Send reply (what the avatar will say)
-                    await _send_json(websocket, {"type": "reply", "text": reply})
+                    if isinstance(reply, dict):
+                        await _send_json(websocket, {
+                            "type": "reply",
+                            "text": reply.get("native_text", ""),
+                            "native_text": reply.get("native_text", ""),
+                            "romanized_text": reply.get("romanized_text", "")
+                        })
+                    else:
+                        await _send_json(websocket, {
+                            "type": "reply",
+                            "text": str(reply),
+                            "native_text": str(reply),
+                            "romanized_text": str(reply)
+                        })
                     await _send_json(websocket, {"type": "status", "data": "stopped"})
 
                 # cancel — discard buffer without transcribing

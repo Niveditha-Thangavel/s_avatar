@@ -49,11 +49,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   // ── TTS client ────────────────────────────────────────────────────────────
   tts = new TTSClient(`${WS_BASE}/ws/tts`);
 
-  tts.onChunk = ({ audio, sampleRate, text }) => {
-    // Pass the sentence text as the "phoneme string" — lipsync will use
-    // the raw text characters to approximate mouth shapes. This gives
-    // visible lip movement even without real IPA phonemes from the server.
-    lipsync.queueAudioChunk(audio, sampleRate, text);
+  tts.onChunk = ({ audio, sampleRate, text, romanized_text }) => {
+    // Pass native text and the aligned romanized_text to lipsync.
+    lipsync.queueAudioChunk(audio, sampleRate, text, romanized_text);
     updateStatusBadge('speaking');
   };
 
@@ -85,12 +83,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     updateProgressUI('💬 Got transcript — generating reply…', true);
   };
 
-  stt.onReply = (text) => {
-    console.log('[STT] Reply:', text);
+  stt.onReply = (reply) => {
+    console.log('[STT] Reply:', reply);
+    const native = reply?.native_text || reply?.reply || (typeof reply === 'string' ? reply : '');
+    const roman = reply?.romanized_text || native;
+
     const ta = document.getElementById('text-input');
-    if (ta) ta.value = `🤖 Avatar: ${text}`;
+    if (ta) ta.value = `🤖 Avatar: ${native}`;
     updateProgressUI('🔊 Generating speech…', true);
-    _speakText(text);
+    _speakText(native, roman);
   };
 
   stt.onStatusChange = (status) => {
@@ -138,7 +139,7 @@ window.addEventListener('DOMContentLoaded', async () => {
  * All audio scheduling and viseme morph-target updates happen inside
  * lipsync.queueAudioChunk() → lipsync.update() → avatar.render().
  */
-async function _speakText(text) {
+async function _speakText(text, romanizedText = null) {
   if (!text?.trim()) return;
 
   // Stop any currently playing audio and reset the lipsync state.
@@ -155,7 +156,7 @@ async function _speakText(text) {
   updateProgressUI('🔊 Generating speech…', true);
 
   try {
-    await tts.speak({ text, instruct, speed, numStep });
+    await tts.speak({ text, romanizedText, instruct, speed, numStep });
   } catch (err) {
     console.error('[Speak]', err);
     updateStatusBadge('error');
@@ -179,10 +180,13 @@ function setupEventListeners() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
-      const { reply } = await res.json();
+      const reply = await res.json();
       if (reply) {
-        document.getElementById('text-input').value = `🤖 Avatar: ${reply}`;
-        _speakText(reply);
+        const native = reply.native_text || reply.reply || (typeof reply === 'string' ? reply : '');
+        const roman = reply.romanized_text || native;
+
+        document.getElementById('text-input').value = `🤖 Avatar: ${native}`;
+        _speakText(native, roman);
       }
     } catch (err) {
       console.error('[Chat]', err);

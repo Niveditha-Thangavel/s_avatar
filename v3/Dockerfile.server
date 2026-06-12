@@ -40,6 +40,9 @@ RUN python3 -c "from faster_whisper import WhisperModel; WhisperModel('large-v3-
 # 2. OmniVoice Model: k2-fsa/OmniVoice (approx. 2.4 GB)
 RUN python3 -c "from omnivoice import OmniVoice; import torch; OmniVoice.from_pretrained('k2-fsa/OmniVoice', device_map='cpu', dtype=torch.float32)"
 
+# 3. Chat Model: mashriram/Sarvam-1-VL-4B-Instruct-VLLM (approx. 8 GB)
+RUN python3 -c "from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor; Qwen3VLProcessor.from_pretrained('mashriram/Sarvam-1-VL-4B-Instruct-VLLM'); Qwen3VLForConditionalGeneration.from_pretrained('mashriram/Sarvam-1-VL-4B-Instruct-VLLM')"
+
 # Expose backend FastAPI port
 EXPOSE 8765
 
