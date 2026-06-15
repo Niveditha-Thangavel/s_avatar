@@ -12,8 +12,6 @@ services:
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
       - WHISPER_CACHE=/root/.cache/whisper
       - OMNIVOICE_DEVICE=cpu
-    volumes:
-      - model_cache:/root/.cache
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
@@ -33,6 +31,3 @@ services:
       server:
         condition: service_healthy
     restart: unless-stopped
-
-volumes:
-  model_cache:
