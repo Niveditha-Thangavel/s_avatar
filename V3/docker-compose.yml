@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+
+  # ── Frontend — Nginx static (port 3005) ───────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: voice-avatar-frontend
+    ports:
+      - "3005:3005"
+    depends_on:
+      - server
+    networks:
+      - avatar-net
+    restart: unless-stopped
+
+  # ── Server — all models: OmniVoice + Whisper + SMaLL-100 + Granite ────────
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: voice-avatar-server
+    ports:
+      - "8765:8765"
+    environment:
+      - OMNIVOICE_DEVICE=cuda:0
+      - TOKENIZERS_PARALLELISM=false
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - TRANSFORMERS_CACHE=/app/.cache/huggingface
+      - HF_HOME=/app/.cache/huggingface
+      - WHISPER_CACHE=/app/.cache/whisper
+    volumes:
+      - model-cache:/app/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - avatar-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+networks:
+  avatar-net:
+    driver: bridge
+
+volumes:
+  model-cache:
