@@ -41,7 +41,7 @@ def _load_tokenizer_class():
       BatchEncoding moved from tokenization_utils → tokenization_utils_base.
     """
     from huggingface_hub import hf_hub_download
-    cache = os.environ.get("TRANSFORMERS_CACHE", "/app/.cache/huggingface")
+    cache = os.environ.get("TRANSFORMERS_CACHE", "/root/.cache/huggingface")
     path  = hf_hub_download(
         repo_id=MODEL_ID,
         filename="tokenization_small100.py",
@@ -80,11 +80,11 @@ async def get_model():
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype  = torch.float16 if device == "cuda" else torch.float32
         logger.info("[Trans] Loading SMaLL-100 on %s (%s) …", device, dtype)
-        cache = os.environ.get("TRANSFORMERS_CACHE", "/app/.cache/huggingface")
+        cache = os.environ.get("TRANSFORMERS_CACHE", "/root/.cache/huggingface")
         SMALL100Tokenizer = _load_tokenizer_class()
         _tokenizer = SMALL100Tokenizer.from_pretrained(MODEL_ID, cache_dir=cache)
         _model     = M2M100ForConditionalGeneration.from_pretrained(
-            MODEL_ID, torch_dtype=dtype, cache_dir=cache
+            MODEL_ID, dtype=dtype, cache_dir=cache
         ).to(device)
         _model.eval()
         logger.info("[Trans] ✅ SMaLL-100 ready on %s", device)

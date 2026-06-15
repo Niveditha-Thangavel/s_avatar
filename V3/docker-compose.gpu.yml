@@ -1,0 +1,25 @@
+# docker-compose.gpu.yml — GPU override for production server
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Requirements on the host:
+#   - nvidia-container-toolkit installed and configured
+#   - NVIDIA drivers (525+) with CUDA 12.4 support
+
+services:
+  server:
+    build:
+      args:
+        BASE_IMAGE: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+        SKIP_TORCH_INSTALL: "true"
+    environment:
+      - OMNIVOICE_DEVICE=cuda:0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

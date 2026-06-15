@@ -1,28 +1,10 @@
-# Exclude local dependency folders
-node_modules/
-server/venv/
-services/*/venv/
-venv/
-**/__pycache__/
-**/*.pyc
-.ipynb_checkpoints/
-
-# Exclude local build artifacts
-dist/
-
-# Exclude local environment configs and metadata
 .git/
 .gitignore
 .DS_Store
-.vscode/
-
-# Exclude local test configuration
-docker-compose.local.yml
-
-# Exclude model cache directories from build context (handled via volumes)
-services/omnivoice/.cache/
-services/brain/.cache/
-server/.cache/
-
-# Exclude old ultravox service (replaced by brain service)
-services/ultravox/
+*.sw?
+node_modules/
+dist/
+server/venv/
+server/__pycache__/
+**/__pycache__/
+**/*.pyc

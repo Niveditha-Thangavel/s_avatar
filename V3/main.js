@@ -1,7 +1,5 @@
 import { Avatar3D } from './src/avatar3d.js';
 import { BehaviorManager } from './src/behavior.js';
-import { LipSyncManager } from './src/lipsync.js';
-import { TTSClient } from './src/tts_client.js';
 import { STTManager } from './src/stt.js';
 
 // ── Server config ─────────────────────────────────────────────────────────────
@@ -29,9 +27,11 @@ const HTTP_BASE = getHttpBase();
 // ── Globals ───────────────────────────────────────────────────────────────────
 let avatar   = null;
 let behavior = null;
-let lipsync  = null;
-let tts      = null;
 let stt      = null;
+
+// Audio playback for server-generated audio
+let audioContext = null;
+let activeAudioSource = null;
 
 let lastFrameTime = performance.now();
 let frameCount = 0;
@@ -44,38 +44,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   // 3D scene + animation
   avatar   = new Avatar3D('canvas-container', '/avatar_head.glb');
   behavior = new BehaviorManager();
-  lipsync  = new LipSyncManager();
-
-  // ── TTS client ────────────────────────────────────────────────────────────
-  tts = new TTSClient(`${WS_BASE}/ws/tts`);
-
-  tts.onChunk = ({ audio, sampleRate, text, romanized_text }) => {
-    // romanized_text is the English/Latin text used for viseme mapping.
-    // text is the native-language sentence sent to OmniVoice for audio.
-    // Lipsync needs Latin chars → use romanized_text when available,
-    // otherwise fall back to text (works for English-only responses).
-    const lipText = romanized_text || text;
-    lipsync.queueAudioChunk(audio, sampleRate, text, lipText);
-    updateStatusBadge('speaking');
-  };
-
-  tts.onStatusChange = (status) => {
-    console.log('[TTS status]', status);
-    updateStatusBadge(status);
-    if (status === 'generating') {
-      updateProgressUI('🔊 Generating speech…', true);
-    }
-    if (status === 'complete') {
-      updateProgressUI('▶️ Playing…', false);
-      // Force-flush if fewer than bufferThreshold chunks arrived
-      lipsync.flushBuffer();
-    }
-  };
-
-  tts.onError = (msg) => {
-    console.error('[TTS]', msg);
-    updateStatusBadge('error');
-  };
 
   // ── STT manager ───────────────────────────────────────────────────────────
   stt = new STTManager(`${WS_BASE}/ws/stt`);
@@ -87,7 +55,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     updateProgressUI('💬 Got transcript — generating reply…', true);
   };
 
-  stt.onReply = (reply) => {
+  stt.onReply = async (reply) => {
     console.log('[STT] Reply:', reply);
     const native = reply?.native_text || reply?.reply || (typeof reply === 'string' ? reply : '');
     const roman = reply?.romanized_text || native;
@@ -139,28 +107,31 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 // ── Core speak function ───────────────────────────────────────────────────────
 /**
- * Synthesise text via the server TTS and play it through the lip-sync engine.
- * All audio scheduling and viseme morph-target updates happen inside
- * lipsync.queueAudioChunk() → lipsync.update() → avatar.render().
+ * Speak text via the server's /api/v1/chat endpoint.
+ * Receives audio_url + animation_matrix, plays audio and drives blendshapes.
  */
 async function _speakText(text, romanizedText = null) {
   if (!text?.trim()) return;
 
-  // Stop any currently playing audio and reset the lipsync state.
-  // init() is idempotent — safe to call even if already initialised.
-  lipsync.stop();
-  lipsync.init();
-  lipsync.resume();
-
-  const instruct = document.getElementById('instruct-input')?.value?.trim() || null;
-  const speed    = parseFloat(document.getElementById('speed-range')?.value   || '1.0');
-  const numStep  = parseInt(document.getElementById('quality-select')?.value  || '16', 10);
+  // Stop any currently playing audio
+  _stopAudio();
 
   updateStatusBadge('generating');
   updateProgressUI('🔊 Generating speech…', true);
 
   try {
-    await tts.speak({ text, romanizedText, instruct, speed, numStep });
+    // Build form data with the text
+    // For typed text, we don't have audio — the legacy /chat endpoint
+    // doesn't support the new matrix format. For mic input, the WebSocket
+    // STT flow fires onReply which also calls _speakText.
+    // The new /api/v1/chat is used via the mic+audio path only.
+    // For typed text, fall back to legacy streaming TTS without matrix.
+    const instruct = document.getElementById('instruct-input')?.value?.trim() || null;
+    const speed    = parseFloat(document.getElementById('speed-range')?.value   || '1.0');
+    const numStep  = parseInt(document.getElementById('quality-select')?.value  || '16', 10);
+
+    // Use legacy TTS WebSocket for typed text (no audio file to send)
+    await _speakViaLegacyTTS(text, romanizedText, instruct, speed, numStep);
   } catch (err) {
     console.error('[Speak]', err);
     updateStatusBadge('error');
@@ -168,10 +139,177 @@ async function _speakText(text, romanizedText = null) {
   }
 }
 
+/**
+ * Legacy TTS path: used for typed text input. Streams via /ws/tts WebSocket.
+ * No animation matrix available — avatar stays in idle procedural motion.
+ */
+async function _speakViaLegacyTTS(text, romanizedText, instruct, speed, numStep) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${WS_BASE}/ws/tts`);
+    ws.binaryType = 'arraybuffer';
+
+    const audioChunks = [];
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        type: 'speak',
+        text,
+        romanized_text: romanizedText,
+        instruct,
+        speed,
+        numStep,
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        audioChunks.push(new Float32Array(event.data));
+        return;
+      }
+
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'chunk') {
+          // next message will be binary
+        } else if (msg.type === 'status' && msg.data === 'complete') {
+          ws.close();
+        } else if (msg.type === 'status' && msg.data === 'error') {
+          reject(new Error(msg.message || 'TTS error'));
+        }
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      if (audioChunks.length === 0) {
+        resolve();
+        return;
+      }
+
+      // Play the accumulated audio
+      const totalLen = audioChunks.reduce((s, c) => s + c.length, 0);
+      const combined = new Float32Array(totalLen);
+      let offset = 0;
+      for (const chunk of audioChunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      _playAudioBuffer(combined, 24000);
+      updateStatusBadge('speaking');
+      updateProgressUI('▶️ Playing…', false);
+      resolve();
+    };
+
+    ws.onerror = () => reject(new Error('WebSocket error'));
+  });
+}
+
+/**
+ * Play audio through Web Audio API and drive avatar from animation matrix.
+ */
+function _playAudioBuffer(audioData, sampleRate, animationMatrix) {
+  _stopAudio();
+
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioContext.state === 'suspended') {
+    audioContext.resume();
+  }
+
+  const buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
+  buffer.getChannelData(0).set(audioData);
+
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+  source.start(0);
+  activeAudioSource = source;
+
+  // Set animation matrix if provided
+  if (animationMatrix) {
+    avatar.setAnimationMatrix(animationMatrix);
+  }
+
+  source.onended = () => {
+    activeAudioSource = null;
+    avatar.clearAnimation();
+    updateStatusBadge('idle');
+  };
+}
+
+function _stopAudio() {
+  if (activeAudioSource) {
+    try { activeAudioSource.stop(); } catch {}
+    activeAudioSource = null;
+  }
+  avatar.clearAnimation();
+}
+
+/**
+ * Send recorded audio to /api/v1/chat for unified processing.
+ */
+async function _sendAudioToUnifiedAPI(audioBlob) {
+  updateProgressUI('📤 Sending audio…', true);
+
+  try {
+    const formData = new FormData();
+    formData.append('file', audioBlob, 'audio.wav');
+
+    const res = await fetch(`${HTTP_BASE}/api/v1/chat`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`API error ${res.status}: ${errText}`);
+    }
+
+    const data = await res.json();
+    const { audio_url, animation_matrix } = data;
+
+    updateProgressUI('🔊 Playing response…', true);
+
+    // Fetch the audio from the returned URL
+    const audioRes = await fetch(audio_url);
+    const audioBuffer = await audioRes.arrayBuffer();
+
+    // Parse WAV to extract raw float32 PCM
+    const view = new DataView(audioBuffer);
+    let offset = 12;
+    let dataSize = 0;
+    while (offset < view.byteLength) {
+      const chunkId = String.fromCharCode(
+        view.getUint8(offset), view.getUint8(offset + 1),
+        view.getUint8(offset + 2), view.getUint8(offset + 3)
+      );
+      const chunkSize = view.getUint32(offset + 4, true);
+      if (chunkId === 'data') {
+        dataSize = chunkSize;
+        offset += 8;
+        break;
+      }
+      offset += 8 + chunkSize;
+    }
+    const pcmData = new Float32Array(dataSize / 4);
+    for (let i = 0; i < pcmData.length; i++) {
+      pcmData[i] = view.getFloat32(offset + i * 4, true);
+    }
+
+    _playAudioBuffer(pcmData, 24000, animation_matrix);
+    updateStatusBadge('speaking');
+  } catch (err) {
+    console.error('[UnifiedAPI]', err);
+    updateStatusBadge('error');
+    updateProgressUI(`❌ Error: ${err.message}`, false);
+  }
+}
+
 // ── Event listeners ───────────────────────────────────────────────────────────
 function setupEventListeners() {
 
-  // Speak button — typed text: send directly to TTS (bypass /chat when unavailable)
+  // Speak button — typed text
   document.getElementById('btn-speak')?.addEventListener('click', async () => {
     const text = document.getElementById('text-input')?.value?.trim();
     if (!text) return;
@@ -179,8 +317,6 @@ function setupEventListeners() {
     updateStatusBadge('generating');
     updateProgressUI('🔊 Generating speech…', true);
 
-    // Try /chat first (Granite LLM). If it fails or brain is down,
-    // speak the typed text directly via TTS without LLM processing.
     try {
       const res = await fetch(`${HTTP_BASE}/chat`, {
         method: 'POST',
@@ -197,18 +333,15 @@ function setupEventListeners() {
         return;
       }
     } catch (_err) {
-      // Brain not available — speak typed text directly
       console.warn('[Chat] Brain unavailable, speaking typed text directly');
     }
 
-    // Fallback: speak exactly what was typed
     _speakText(text, text);
   });
 
   // Stop button
   document.getElementById('btn-stop')?.addEventListener('click', () => {
-    tts.stop();
-    lipsync.stop();
+    _stopAudio();
     updateStatusBadge('idle');
   });
 
@@ -217,11 +350,22 @@ function setupEventListeners() {
   if (btnMic) {
     btnMic.addEventListener('click', async () => {
       if (stt.isListening) {
-        // User pressed Stop → send audio to Whisper, wait for reply
         btnMic.classList.remove('active');
         btnMic.innerHTML = '<span class="btn-icon">⏳</span> Processing…';
         btnMic.disabled  = true;
-        stt.stop();   // sends { type:"stop" }, keeps socket open for reply
+
+        // Stop recording
+        stt.stop();
+
+        // Use unified /api/v1/chat endpoint
+        try {
+          const blob = await stt.getRecordingBlob();
+          updateProgressUI('📤 Sending to server…', true);
+          await _sendAudioToUnifiedAPI(blob);
+        } catch (err) {
+          console.error('[Mic->Unified]', err);
+          // Fallback: rely on WS reply (onReply callback will fire)
+        }
       } else {
         try {
           const lang = document.getElementById('lang-select')?.value || null;
@@ -295,13 +439,9 @@ function renderLoop() {
     fpsTimer   = 0;
   }
 
-  // Volume from the currently playing TTS audio drives head-bobbing
-  const volume = lipsync.getVolume();
-  behavior.update(dt, volume);
-  lipsync.update(dt);
-  updateHUDPhoneme();
+  behavior.update(dt);
 
-  if (avatar) avatar.render(dt, behavior, lipsync);
+  if (avatar) avatar.render(dt, behavior, null);
 }
 
 // ── HUD & status ──────────────────────────────────────────────────────────────
@@ -319,7 +459,6 @@ function updateStatusBadge(status) {
   }
 }
 
-// ── Progress UI ───────────────────────────────────────────────────────────────
 function updateProgressUI(message, showSpinner) {
   const bar  = document.getElementById('progress-bar');
   const text = document.getElementById('progress-label');
@@ -351,17 +490,6 @@ function updateMicBadge(status) {
 
 function showLoader() { document.getElementById('model-loader')?.classList.remove('hidden'); }
 function hideLoader()  { document.getElementById('model-loader')?.classList.add('hidden'); }
-
-function updateHUDPhoneme() {
-  const el = document.getElementById('hud-phoneme');
-  if (!el) return;
-  if (!lipsync?.isPlaying || !lipsync?.audioCtx) { el.innerText = '-'; return; }
-  const t      = lipsync.audioCtx.currentTime;
-  // Use visemeTimeline (new lipsync) or phonemeTimeline (old lipsync) — whichever exists
-  const timeline = lipsync.visemeTimeline || lipsync.phonemeTimeline || [];
-  const active = timeline.find(ev => t >= ev.startTime && t <= ev.endTime);
-  el.innerText = active ? active.viseme?.replace('viseme_','') || '●' : '-';
-}
 
 // ── Console HUD ───────────────────────────────────────────────────────────────
 function injectConsoleHUD() {
@@ -419,10 +547,6 @@ function setupCalibrationSliders() {
   };
 
   sliders.forEach((s) => {
-    const key = s.replace('-','').replace(/([a-z])([XYZ])/, (_,a,b) => a + b.toLowerCase())
-                  .replace(/^([lr][afh])([xyz])$/, (_, bone, ax) =>
-                    bone[0] + bone[1].toUpperCase() + ax.toUpperCase());
-    // Map "la-x" → "laX" style key
     const camelKey = s.replace(/-([a-z])/g, (_, c) => c.toUpperCase())
                        .replace(/^([a-z]{2})([a-z])$/, (_, b, ax) => b + ax.toUpperCase());
     const el    = document.getElementById(`cal-${s}`);
@@ -430,7 +554,6 @@ function setupCalibrationSliders() {
     if (!el) return;
     el.addEventListener('input', () => {
       const v = parseFloat(el.value);
-      // find matching key in defaults
       const matchKey = Object.keys(defaults).find(k =>
         k.toLowerCase() === camelKey.toLowerCase()
       );

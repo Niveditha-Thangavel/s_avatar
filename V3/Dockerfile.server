@@ -1,35 +1,61 @@
-# Voice Avatar Server
-# All models in one container: OmniVoice TTS + Whisper STT + SMaLL-100 + Granite LLM
-# Base: PyTorch 2.5.1 + CUDA 12.4 + cuDNN 9
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+# Dockerfile.server — Python backend (Whisper, SMaLL-100, Granite, OmniVoice, PantoMatrix)
+#
+# Build context must be the project root (V3/) — not server/ subdirectory.
+#
+# Local (M-series Mac):
+#   docker build -f Dockerfile.server -t avatar-server .
+#
+# GPU server (override base image & torch index):
+#   docker build -f Dockerfile.server \
+#     --build-arg BASE_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime \
+#     --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+#     -t avatar-server .
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV TOKENIZERS_PARALLELISM=false
-ENV TRANSFORMERS_CACHE=/app/.cache/huggingface
-ENV HF_HOME=/app/.cache/huggingface
-ENV WHISPER_CACHE=/app/.cache/whisper
-ENV OMNIVOICE_DEVICE=cuda:0
-ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+ARG BASE_IMAGE=python:3.11-slim
+FROM $BASE_IMAGE
 
+# Default: CPU-only torch (works on both ARM64 and x86_64 Linux)
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+
+# GPU base images (pytorch/pytorch) ship torch via conda — pip would re-download.
+# Set SKIP_TORCH_INSTALL=true to skip this layer on GPU builds.
+ARG SKIP_TORCH_INSTALL=false
+
+WORKDIR /app/server
+
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg libsndfile1 git curl \
+    build-essential \
+    gcc \
+    curl \
+    perl \
+    ffmpeg \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# PyTorch (CPU by default; override via --build-arg for CUDA)
+RUN if [ "$SKIP_TORCH_INSTALL" != "true" ]; then \
+      pip install --no-cache-dir torch==2.5.1 torchaudio==2.5.1 --index-url $TORCH_INDEX_URL; \
+    fi
 
-# Install Python dependencies
-COPY server/requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Python deps
+COPY server/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy server source
-COPY server/ ./
+# Consistent model cache paths — match docker-compose volumes
+ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
+ENV WHISPER_CACHE=/root/.cache/whisper
 
-# Pre-cache all model weights at build time (CPU only — no GPU needed during build)
-RUN python3 cache_model.py || echo "[Build] Some models failed to cache — will download at runtime"
+# Pre-download all models at build time
+COPY server/download_models.py .
+RUN python download_models.py
+
+# Server source
+COPY server/*.py ./
+
+ENV PYTHONUNBUFFERED=1
+ENV TOKENIZERS_PARALLELISM=false
 
 EXPOSE 8765
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8765", "--workers", "1"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8765", "--log-level", "info"]

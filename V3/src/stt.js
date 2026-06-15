@@ -1,13 +1,15 @@
 /**
  * STTManager – real-time Speech-to-Text via WebSocket
+ * Also accumulates recorded PCM for the unified /api/v1/chat endpoint.
  *
- * Flow:
+ * Flow (legacy):
  *  1. start()  → open WS, request mic, stream PCM frames to server
- *  2. stop()   → send { type:"stop" }  (keeps socket OPEN)
- *              → server runs Whisper on the full buffer
- *              → server sends transcript + reply back
- *              → onTranscript / onReply fire
- *              → socket closes only after "stopped" status arrives
+ *  2. stop()   → send { type:"stop" }  → server transcribes → reply via WS
+ *
+ * Flow (unified):
+ *  1. start()  → record mic, accumulate PCM locally
+ *  2. stop()   → stop mic, return a WAV Blob for POST /api/v1/chat
+ *  3. getRecordingBlob() → returns Promise<Blob> of WAV audio
  */
 export class STTManager {
   constructor(wsUrl) {
@@ -19,12 +21,15 @@ export class STTManager {
     this.isListening = false;
 
     // Callbacks — set these before calling start()
-    this.onTranscript  = null;   // (text: string) what the user said
-    this.onReply       = null;   // (text: string) what the avatar should say
-    this.onStatusChange = null;  // (status: string)
-    this.onError       = null;   // (msg: string)
+    this.onTranscript  = null;
+    this.onReply       = null;
+    this.onStatusChange = null;
+    this.onError       = null;
 
     this._targetSampleRate = 16_000;
+
+    // Accumulated PCM chunks (Int16Array buffers) for unified API
+    this._recordedChunks = [];
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -32,7 +37,9 @@ export class STTManager {
   async start(language = null) {
     if (this.isListening) return;
 
-    // 1. Open WebSocket — keep it open until server sends "stopped"
+    this._recordedChunks = [];
+
+    // Open WebSocket for legacy STT pipeline (transcript display + reply)
     this.ws = new WebSocket(this.wsUrl);
     this.ws.binaryType = 'arraybuffer';
 
@@ -44,15 +51,13 @@ export class STTManager {
     this.ws.onmessage = (e) => this._handleServerMessage(e);
     this.ws.onerror   = ()  => this._emit('error', 'STT WebSocket error');
     this.ws.onclose   = ()  => {
-      // Socket closed — clean up audio resources if still running
       this._teardownAudio();
       this._emit('statusChange', 'idle');
     };
 
-    // 2. Send language config
     this.ws.send(JSON.stringify({ type: 'config', language }));
 
-    // 3. Microphone
+    // Microphone
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -69,7 +74,7 @@ export class STTManager {
       throw new Error(`Microphone access denied: ${err.message}`);
     }
 
-    // 4. AudioContext + AudioWorklet (inline, no extra file needed)
+    // AudioContext + AudioWorklet
     this.audioCtx = new AudioContext({ sampleRate: this._targetSampleRate });
 
     const workletCode = `
@@ -93,46 +98,36 @@ export class STTManager {
     await this.audioCtx.audioWorklet.addModule(url);
     URL.revokeObjectURL(url);
 
-    // 5. mic → worklet → WebSocket
     const source = this.audioCtx.createMediaStreamSource(this.micStream);
     this.workletNode = new AudioWorkletNode(this.audioCtx, 'pcm-processor');
     this.workletNode.port.onmessage = (e) => {
+      // Accumulate for unified API
+      this._recordedChunks.push(new Int16Array(e.data));
+
+      // Also stream to server for legacy WS pipeline
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(e.data);
       }
     };
     source.connect(this.workletNode);
-    // intentionally NOT connected to destination — no mic feedback
 
     this.isListening = true;
     this._emit('statusChange', 'listening');
   }
 
-  /**
-   * Stop recording and signal the server to transcribe.
-   * DOES NOT close the socket — the socket stays open until the server
-   * finishes Whisper + chat and sends back { type:"status", data:"stopped" }.
-   */
   stop() {
     if (!this.isListening) return;
     this.isListening = false;
 
-    // Stop the mic stream so the user sees the recording indicator go off
     this._teardownAudio();
 
-    // Tell the server to flush the buffer and run Whisper.
-    // Keep the socket open so the reply can come back.
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'stop' }));
-      // Socket will be closed by _handleServerMessage once "stopped" arrives
     }
 
     this._emit('statusChange', 'processing');
   }
 
-  /**
-   * Discard everything without transcribing.
-   */
   cancel() {
     this.isListening = false;
     this._teardownAudio();
@@ -140,7 +135,64 @@ export class STTManager {
       this.ws.send(JSON.stringify({ type: 'cancel' }));
       this.ws.close();
     }
+    this._recordedChunks = [];
     this._emit('statusChange', 'idle');
+  }
+
+  /**
+   * Get accumulated recording as a WAV Blob for the unified /api/v1/chat endpoint.
+   * @returns {Promise<Blob>} WAV blob (16-bit PCM, 16kHz mono)
+   */
+  async getRecordingBlob() {
+    if (this._recordedChunks.length === 0) {
+      throw new Error('No audio recorded');
+    }
+
+    // Concatenate all Int16 chunks
+    const totalLen = this._recordedChunks.reduce((s, c) => s + c.length, 0);
+    const allPCM = new Int16Array(totalLen);
+    let offset = 0;
+    for (const chunk of this._recordedChunks) {
+      allPCM.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const sr = this._targetSampleRate;
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sr * numChannels * bitsPerSample / 8;
+    const blockAlign = numChannels * bitsPerSample / 8;
+    const dataSize = allPCM.byteLength;
+    const headerSize = 44;
+    const totalSize = headerSize + dataSize;
+
+    const buffer = new ArrayBuffer(totalSize);
+    const view = new DataView(buffer);
+
+    // WAV header
+    const writeStr = (off, str) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(off + i, str.charCodeAt(i));
+      }
+    };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, totalSize - 8, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sr, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    // PCM data
+    new Int16Array(buffer, headerSize, allPCM.length).set(allPCM);
+
+    return new Blob([buffer], { type: 'audio/wav' });
   }
 
   // ── Private ───────────────────────────────────────────────────────────────
@@ -160,7 +212,6 @@ export class STTManager {
 
       case 'status':
         this._emit('statusChange', msg.data);
-        // Server sends "stopped" as the final state after transcript + reply
         if (msg.data === 'stopped' || msg.data === 'cancelled') {
           this.ws?.close();
         }

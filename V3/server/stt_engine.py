@@ -43,7 +43,7 @@ async def get_model():
             "large-v3-turbo",
             device=device,
             compute_type=compute_type,
-            download_root=os.environ.get("WHISPER_CACHE", "/app/.cache/whisper"),
+            download_root=os.environ.get("WHISPER_CACHE", "/root/.cache/whisper"),
         )
         logger.info("[STT] ✅ Whisper ready")
         return _model

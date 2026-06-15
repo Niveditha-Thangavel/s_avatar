@@ -29,6 +29,9 @@ anyascii==0.3.2
 # omnivoice==0.1.5 hard-requires transformers>=5.3.0 — this sets the floor
 omnivoice==0.1.5
 
+# ── Audio resampling (for /api/v1/chat) ────────────────────────────────────────
+scipy>=1.13.0
+
 # ── Placeholder LLM: Granite 4.0 Nano (ibm-granite/granite-4.0-1b) ──────────
 # Standard AutoModelForCausalLM — works on transformers>=5.3.0
 # SMaLL-100 uses M2M100ForConditionalGeneration — also works on transformers>=5.3.0

@@ -42,7 +42,7 @@ async def load_model():
         logger.info("[LLM] Loading Granite '%s' on %s …", MODEL_ID, device)
         _tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
         _model     = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID, device_map=device, torch_dtype=dtype
+            MODEL_ID, device_map=device, dtype=dtype
         )
         _model.eval()
         logger.info("[LLM] ✅ Granite ready on %s", device)
@@ -54,6 +54,11 @@ _SYSTEM = (
     "The user's speech has been translated to English for you. "
     "Reply in English. Keep replies short — 1 to 3 sentences, natural for speech. "
     "No markdown, no bullet points. "
+    "Crucial: In your response text, include emotion tokens in square brackets "
+    "where appropriate. Choose from: [laughter], [sigh], [surprise-oh], "
+    "[dissatisfaction-hnn]. Example: 'That's great to hear! [laughter] "
+    "Let me check that for you.' or 'Oh, I see [surprise-oh] I didn't know that.' "
+    "or 'I understand your concern [dissatisfaction-hnn] let me help.' "
     "Output ONLY valid JSON with exactly these keys: "
     '{"intent":"<label>","emotion":"<neutral|happy|sad|angry|surprised>","response":"<reply>"}'
 )
