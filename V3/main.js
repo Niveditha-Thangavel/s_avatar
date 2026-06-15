@@ -57,13 +57,12 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   stt.onReply = async (reply) => {
     console.log('[STT] Reply:', reply);
-    const native = reply?.native_text || reply?.reply || (typeof reply === 'string' ? reply : '');
-    const roman = reply?.romanized_text || native;
+    const text = reply?.native_text || reply?.reply || (typeof reply === 'string' ? reply : '');
 
     const ta = document.getElementById('text-input');
-    if (ta) ta.value = `🤖 Avatar: ${native}`;
+    if (ta) ta.value = `🤖 Avatar: ${text}`;
     updateProgressUI('🔊 Generating speech…', true);
-    _speakText(native, roman);
+    _speakText(text);
   };
 
   stt.onStatusChange = (status) => {
@@ -110,28 +109,20 @@ window.addEventListener('DOMContentLoaded', async () => {
  * Speak text via the server's /api/v1/chat endpoint.
  * Receives audio_url + animation_matrix, plays audio and drives blendshapes.
  */
-async function _speakText(text, romanizedText = null) {
+async function _speakText(text) {
   if (!text?.trim()) return;
 
-  // Stop any currently playing audio
   _stopAudio();
 
   updateStatusBadge('generating');
   updateProgressUI('🔊 Generating speech…', true);
 
   try {
-    // Build form data with the text
-    // For typed text, we don't have audio — the legacy /chat endpoint
-    // doesn't support the new matrix format. For mic input, the WebSocket
-    // STT flow fires onReply which also calls _speakText.
-    // The new /api/v1/chat is used via the mic+audio path only.
-    // For typed text, fall back to legacy streaming TTS without matrix.
     const instruct = document.getElementById('instruct-input')?.value?.trim() || null;
     const speed    = parseFloat(document.getElementById('speed-range')?.value   || '1.0');
     const numStep  = parseInt(document.getElementById('quality-select')?.value  || '16', 10);
 
-    // Use legacy TTS WebSocket for typed text (no audio file to send)
-    await _speakViaLegacyTTS(text, romanizedText, instruct, speed, numStep);
+    await _speakViaLegacyTTS(text, instruct, speed, numStep);
   } catch (err) {
     console.error('[Speak]', err);
     updateStatusBadge('error');
@@ -143,7 +134,7 @@ async function _speakText(text, romanizedText = null) {
  * Legacy TTS path: used for typed text input. Streams via /ws/tts WebSocket.
  * No animation matrix available — avatar stays in idle procedural motion.
  */
-async function _speakViaLegacyTTS(text, romanizedText, instruct, speed, numStep) {
+async function _speakViaLegacyTTS(text, instruct, speed, numStep) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${WS_BASE}/ws/tts`);
     ws.binaryType = 'arraybuffer';
@@ -154,7 +145,6 @@ async function _speakViaLegacyTTS(text, romanizedText, instruct, speed, numStep)
       ws.send(JSON.stringify({
         type: 'speak',
         text,
-        romanized_text: romanizedText,
         instruct,
         speed,
         numStep,
@@ -327,16 +317,15 @@ function setupEventListeners() {
       const reply = await res.json();
       if (reply && (reply.native_text || reply.reply)) {
         const native = reply.native_text || reply.reply || text;
-        const roman  = reply.romanized_text || native;
         document.getElementById('text-input').value = `🤖 Avatar: ${native}`;
-        _speakText(native, roman);
+        _speakText(native);
         return;
       }
     } catch (_err) {
       console.warn('[Chat] Brain unavailable, speaking typed text directly');
     }
 
-    _speakText(text, text);
+    _speakText(text);
   });
 
   // Stop button

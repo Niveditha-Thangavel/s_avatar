@@ -145,21 +145,20 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     if not req.text.strip():
-        return {"reply": "", "native_text": "", "romanized_text": "", "emotion": "neutral"}
+        return {"reply": "", "native_text": "", "emotion": "neutral"}
 
     payload = await generate_response(req.text.strip(), session_id=req.session_id)
     eng     = payload.get("response", "")
     emotion = payload.get("emotion", "neutral")
     intent  = payload.get("intent",  "unknown")
 
-    native, roman = await translate_from_english(eng, req.lang)
+    native, _ = await translate_from_english(eng, req.lang)
 
     return {
-        "reply":          native,
-        "native_text":    native,
-        "romanized_text": roman,
-        "emotion":        emotion,
-        "intent":         intent,
+        "reply":       native,
+        "native_text": native,
+        "emotion":     emotion,
+        "intent":      intent,
     }
 
 
@@ -180,7 +179,6 @@ async def ws_tts(websocket: WebSocket):
 
             if msg.get("type") == "speak":
                 text     = msg.get("text", "").strip()
-                roman    = msg.get("romanized_text") or msg.get("romanizedText") or None
                 instruct = msg.get("instruct") or None
                 speed    = float(msg.get("speed", 1.0))
                 steps    = int(msg.get("numStep", 16))
@@ -192,15 +190,14 @@ async def ws_tts(websocket: WebSocket):
                 await _j(websocket, {"type": "status", "data": "generating"})
                 try:
                     async for chunk in synthesize_stream(
-                        text=text, romanized_text=roman,
+                        text=text,
                         instruct=instruct, speed=speed, num_step=steps,
                     ):
                         await _j(websocket, {
-                            "type":          "chunk",
-                            "text":          chunk["text"],
-                            "romanized_text": chunk.get("romanized_text", ""),
-                            "sampleRate":    chunk["sample_rate"],
-                            "byteLength":    len(chunk["audio"]),
+                            "type":       "chunk",
+                            "text":       chunk["text"],
+                            "sampleRate": chunk["sample_rate"],
+                            "byteLength": len(chunk["audio"]),
                         })
                         await websocket.send_bytes(chunk["audio"])
                     await _j(websocket, {"type": "status", "data": "complete"})
@@ -302,25 +299,24 @@ async def ws_stt(websocket: WebSocket):
                         eng_response = "I'm sorry, I didn't understand that."
 
                     try:
-                        native, roman = await translate_from_english(eng_response, user_lang)
+                        native, _ = await translate_from_english(eng_response, user_lang)
                     except Exception as exc:
                         logger.warning("[STT-WS] Response translation failed (%s) — using English", exc)
-                        native, roman = eng_response, eng_response
+                        native = eng_response
 
                     if not native.strip():
                         logger.warning("[STT-WS] Response translation empty for %s, using English", user_lang)
-                        native, roman = eng_response, eng_response
+                        native = eng_response
 
                     logger.info("[STT-WS] lang=%s intent=%s emotion=%s reply=%s",
                                 user_lang, intent, emotion, native[:80])
 
                     await _j(websocket, {
-                        "type":           "reply",
-                        "text":           native,
-                        "native_text":    native,
-                        "romanized_text": roman,
-                        "emotion":        emotion,
-                        "intent":         intent,
+                        "type":        "reply",
+                        "text":        native,
+                        "native_text": native,
+                        "emotion":     emotion,
+                        "intent":      intent,
                     })
                     await _j(websocket, {"type": "status", "data": "stopped"})
 
@@ -492,16 +488,15 @@ async def api_v1_chat(
     # ── 6. SMaLL-100 → native (preserving emotion tokens) ───────────────────
     if user_lang == "en":
         native = eng_with_tokens
-        roman = eng_with_tokens
     else:
         try:
-            native, roman = await translate_from_english(eng_with_tokens, user_lang)
+            native, _ = await translate_from_english(eng_with_tokens, user_lang)
         except Exception as exc:
             logger.warning("[API] Translation failed (%s), using English", exc)
-            native, roman = eng_with_tokens, eng_with_tokens
+            native = eng_with_tokens
 
     if not native.strip():
-        native, roman = eng_with_tokens, eng_with_tokens
+        native = eng_with_tokens
 
     # ── Sanitize for OmniVoice: strip whitespace around bracketed tokens ───
     tts_input = _sanitize_for_omni(native)
@@ -511,7 +506,7 @@ async def api_v1_chat(
     # ── 7. OmniVoice TTS → audio bytes ──────────────────────────────────────
     tts_audio_chunks = []
     try:
-        async for chunk in synthesize_stream(text=tts_input, romanized_text=roman):
+        async for chunk in synthesize_stream(text=tts_input):
             tts_audio_chunks.append(chunk["audio"])
         tts_sample_rate = 24000
     except Exception as exc:

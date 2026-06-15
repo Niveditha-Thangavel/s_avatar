@@ -105,6 +105,26 @@ except Exception as e:
     log.error("[4/4] ❌ %s", e)
 
 
+# ── 5. Generate placeholder ref_audio / ref_text for OmniVoice ────────────
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REF_AUDIO = os.path.join(_HERE, "ref_audio.wav")
+REF_TEXT  = os.path.join(_HERE, "ref_text.txt")
+
+if not os.path.exists(REF_AUDIO):
+    log.info("[5/5] Generating placeholder ref_audio.wav (1s silence) …")
+    import numpy as np
+    import soundfile as sf
+    sr = 24000
+    silence = np.zeros(sr, dtype=np.float32)
+    sf.write(REF_AUDIO, silence, sr, format="WAV")
+    log.info("[5/5] ✅ ref_audio.wav created (replace with your voice sample)")
+
+if not os.path.exists(REF_TEXT):
+    log.info("[5/5] Creating placeholder ref_text.txt …")
+    with open(REF_TEXT, "w") as f:
+        f.write("Replace this with the transcription of your ref_audio.wav")
+    log.info("[5/5] ✅ ref_text.txt created (edit with your transcription)")
+
 log.info("Download complete — models cached at:")
 log.info("  HF:     %s", HF_CACHE)
 log.info("  Whisper: %s", WHISPER_CACHE)

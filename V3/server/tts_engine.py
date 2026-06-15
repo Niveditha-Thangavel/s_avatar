@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 24_000
 MODEL_ID    = "k2-fsa/OmniVoice"
 
-_HERE             = Path(__file__).parent
-DEFAULT_REF_AUDIO = _HERE / "ref_audio.wav"
+_HERE              = Path(__file__).parent
+DEFAULT_REF_AUDIO  = _HERE / "ref_audio.wav"
+DEFAULT_REF_TEXT   = _HERE / "ref_text.txt"
 
 _model      = None
 _model_lock = asyncio.Lock()
@@ -62,9 +63,15 @@ async def get_model():
         return _model
 
 
+def _load_ref_text() -> Optional[str]:
+    if DEFAULT_REF_TEXT.exists():
+        with open(DEFAULT_REF_TEXT, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return None
+
+
 async def synthesize_stream(
     text: str,
-    romanized_text: Optional[str] = None,
     instruct: Optional[str] = None,
     speed: float = 1.0,
     num_step: int = 16,
@@ -72,54 +79,42 @@ async def synthesize_stream(
     model = await get_model()
 
     resolved_ref = None
+    resolved_ref_text = None
     if DEFAULT_REF_AUDIO.exists():
         resolved_ref = str(DEFAULT_REF_AUDIO)
+        resolved_ref_text = _load_ref_text()
 
-    sentences     = _split_sentences(text)
-    rom_sentences = _split_sentences(romanized_text) if romanized_text else []
-
-    # Align romanized sentences to native sentences.
-    # romanized_text is `anyascii(native_text)` — same sentence boundaries
-    # as the native text, so counts should match.  As a safety net, when
-    # counts differ we distribute proportionally so every chunk gets a
-    # unique romanized slice rather than repeating the last sentence.
-    def _get_rom(i):
-        if not rom_sentences:
-            return sentences[i]
-        if len(rom_sentences) == len(sentences):
-            return rom_sentences[i]
-        # Proportional mapping for mismatched counts
-        idx = int(i * len(rom_sentences) / max(len(sentences), 1))
-        return rom_sentences[min(idx, len(rom_sentences) - 1)]
-
+    sentences = _split_sentences(text)
     loop = asyncio.get_event_loop()
 
     for idx, sentence in enumerate(sentences):
         sentence = sentence.strip()
         if not sentence:
             continue
-        rom_sentence = _get_rom(idx)
 
         audio_np = await loop.run_in_executor(
-            None, _run_generate, model, sentence, resolved_ref, instruct, speed, num_step
+            None, _run_generate, model, sentence,
+            resolved_ref, resolved_ref_text,
+            instruct, speed, num_step,
         )
         if audio_np is None or len(audio_np) == 0:
             logger.warning("[TTS] Empty audio for: %r", sentence)
             continue
 
         yield {
-            "audio":          audio_np.astype(np.float32).tobytes(),
-            "sample_rate":    SAMPLE_RATE,
-            "text":           sentence,
-            "romanized_text": rom_sentence,
+            "audio":       audio_np.astype(np.float32).tobytes(),
+            "sample_rate": SAMPLE_RATE,
+            "text":        sentence,
         }
 
 
-def _run_generate(model, text, ref_audio, instruct, speed, num_step):
+def _run_generate(model, text, ref_audio, ref_text, instruct, speed, num_step):
     try:
         kwargs = dict(text=text, num_step=num_step, speed=speed)
         if ref_audio:
             kwargs["ref_audio"] = ref_audio
+            if ref_text:
+                kwargs["ref_text"] = ref_text
         elif instruct:
             kwargs["instruct"] = instruct
         audio_list = model.generate(**kwargs)
@@ -137,8 +132,6 @@ def _split_sentences(text: str) -> list:
         words = text.split()
         parts = [" ".join(words[i:i+60]) for i in range(0, len(words), 60)]
     parts = [p for p in parts if p.strip()]
-    # Merge very short parts (< 10 chars) with the next part to avoid
-    # OmniVoice generating empty audio for standalone short text like "Hello!".
     merged = []
     for p in parts:
         if merged and len(merged[-1]) < 10:
