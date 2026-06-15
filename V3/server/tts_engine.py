@@ -109,21 +109,34 @@ async def synthesize_stream(
 
 
 def _run_generate(model, text, ref_audio, ref_text, instruct, speed, num_step):
-    try:
-        kwargs = dict(text=text, num_step=num_step, speed=speed)
-        if ref_audio:
-            kwargs["ref_audio"] = ref_audio
-            if ref_text:
-                kwargs["ref_text"] = ref_text
-        elif instruct:
-            kwargs["instruct"] = instruct
-        audio_list = model.generate(**kwargs)
-        if not audio_list:
-            return None
-        return np.concatenate([np.asarray(a, dtype=np.float32) for a in audio_list])
-    except Exception:
-        logger.exception("[TTS] generate() failed for: %r", text)
-        return None
+    # Try with ref_audio first; fall back to instruct/default on failure
+    strategies = []
+    if ref_audio:
+        strategies.append(("ref_audio", dict(
+            text=text, num_step=num_step, speed=speed,
+            ref_audio=ref_audio,
+            **(dict(ref_text=ref_text) if ref_text else {}),
+        )))
+    if instruct:
+        strategies.append(("instruct", dict(
+            text=text, num_step=num_step, speed=speed,
+            instruct=instruct,
+        )))
+    strategies.append(("default", dict(
+        text=text, num_step=num_step, speed=speed,
+    )))
+
+    for label, kwargs in strategies:
+        try:
+            audio_list = model.generate(**kwargs)
+            if audio_list:
+                return np.concatenate([np.asarray(a, dtype=np.float32) for a in audio_list])
+        except Exception as exc:
+            logger.warning("[TTS] %s strategy failed for %r: %s", label, text, exc)
+            continue
+
+    logger.error("[TTS] All generation strategies failed for: %r", text)
+    return None
 
 
 def _split_sentences(text: str) -> list:

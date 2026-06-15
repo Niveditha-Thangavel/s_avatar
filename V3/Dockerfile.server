@@ -46,6 +46,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 ENV WHISPER_CACHE=/root/.cache/whisper
 
+# Reference audio for voice cloning (copy early so download_models.py sees them)
+COPY server/ref_audio.wav server/ref_text.txt ./
+
 # Pre-download all models at build time
 COPY server/download_models.py .
 RUN python download_models.py
