@@ -27,8 +27,4 @@ dist-ssr
 server/venv/
 server/__pycache__/
 server/*.pyc
-server/reply.wav
-server/my_question.wav
-*.wav
-!server/ref_audio.wav
 __pycache__/
