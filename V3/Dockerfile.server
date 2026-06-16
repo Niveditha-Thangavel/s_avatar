@@ -21,7 +21,7 @@ ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 # Set SKIP_TORCH_INSTALL=true to skip this layer on GPU builds.
 ARG SKIP_TORCH_INSTALL=false
 
-WORKDIR /app/server
+WORKDIR /app
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -39,25 +39,24 @@ RUN if [ "$SKIP_TORCH_INSTALL" != "true" ]; then \
     fi
 
 # Python deps
-COPY server/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY server/requirements.txt server/
+RUN pip install --no-cache-dir -r server/requirements.txt
 
 # Consistent model cache paths — match docker-compose volumes
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 
 # Pre-download all models at build time
-COPY server/download_models.py .
-RUN python download_models.py
+COPY server/download_models.py server/
+RUN python server/download_models.py
 
 # Server source
-COPY server/*.py ./
-
+COPY server/*.py server/
 # Reference audio for voice cloning (late copy — doesn't invalidate model cache)
-COPY server/ref_audio.wav server/ref_text.txt ./
+COPY server/ref_audio.wav server/ref_text.txt server/
 
 ENV PYTHONUNBUFFERED=1
 ENV TOKENIZERS_PARALLELISM=false
 
 EXPOSE 8765
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8765", "--log-level", "info"]
+CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8765", "--log-level", "info"]
