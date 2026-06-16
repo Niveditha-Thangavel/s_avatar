@@ -1,4 +1,4 @@
-# Dockerfile.server — Python backend (Whisper, SMaLL-100, Granite, OmniVoice, PantoMatrix)
+# Dockerfile.server — Python backend (Whisper STT, SMaLL-100, Granite, OmniVoice, PantoMatrix)
 #
 # Build context must be the project root (V3/) — not server/ subdirectory.
 #
@@ -44,7 +44,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Consistent model cache paths — match docker-compose volumes
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
-ENV WHISPER_CACHE=/root/.cache/whisper
 
 # Pre-download all models at build time
 COPY server/download_models.py .

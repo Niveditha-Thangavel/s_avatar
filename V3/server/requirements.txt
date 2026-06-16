@@ -1,6 +1,8 @@
 # Voice Avatar Server — unified requirements
-# Base image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
-# (torch 2.5.1 pre-installed)
+# Base image (GPU): pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+#   torch 2.5.1 + torchaudio pre-installed via conda → SKIP_TORCH_INSTALL=true
+# Base image (CPU): python:3.11-slim
+#   torch installed explicitly via pip
 
 fastapi==0.115.12
 uvicorn[standard]==0.34.3
@@ -8,32 +10,28 @@ pydantic==2.11.4
 numpy==1.26.4
 soundfile==0.12.1
 
-# ── Model 1: Whisper Large-v3-Turbo (STT + speech-to-English translation) ────
-# Uses CTranslate2 — completely independent of the transformers package
-faster-whisper==1.1.1
+# ── Model 1: Whisper large-v3-turbo (STT + language detection) ───────────────
+# transformers pipeline wraps the HuggingFace Whisper implementation.
+# accelerate is required for device_map and low_cpu_mem_usage.
+# torchaudio needed for audio feature extraction inside the pipeline.
+torchaudio>=2.1.0
 
-# ── Model 2 (utility): SMaLL-100 (English response → user's language) ─────────
-# Custom tokenizer (SMALL100Tokenizer) lives in the model repo,
-# downloaded via huggingface_hub at build time
+# ── Model 2 (utility): SMaLL-100 (translation, 100+ languages) ───────────────
 sentencepiece==0.2.0
 huggingface_hub>=0.23.0
 
-# ── Utility: romanization for lipsync visemes ─────────────────────────────────
-# uroman (universal romanizer) handles all non-Latin scripts — context-aware,
-# n-to-m character mapping, fully offline.  anyascii is kept as a safety
-# fallback for edge cases.
-uroman>=1.3.1
-anyascii==0.3.2
-
 # ── Model 3: OmniVoice TTS ────────────────────────────────────────────────────
-# omnivoice==0.1.5 hard-requires transformers>=5.3.0 — this sets the floor
+# omnivoice 0.1.5 hard-requires transformers>=5.3.0
 omnivoice==0.1.5
 
-# ── Audio resampling (for /api/v1/chat) ────────────────────────────────────────
-scipy>=1.13.0
-
-# ── Placeholder LLM: Granite 4.0 Nano (ibm-granite/granite-4.0-1b) ──────────
-# Standard AutoModelForCausalLM — works on transformers>=5.3.0
-# SMaLL-100 uses M2M100ForConditionalGeneration — also works on transformers>=5.3.0
+# ── Model 4: Granite 4.0 Nano LLM ────────────────────────────────────────────
+# transformers + accelerate cover both Whisper and Granite
 transformers>=5.3.0
 accelerate>=0.30.0
+
+# ── Romanisation for translated text ─────────────────────────────────────────
+uroman>=1.0.0
+anyascii>=0.3.2
+
+# ── Audio resampling ──────────────────────────────────────────────────────────
+scipy>=1.13.0

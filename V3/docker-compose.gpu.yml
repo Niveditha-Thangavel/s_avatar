@@ -15,7 +15,16 @@ services:
         TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
         SKIP_TORCH_INSTALL: "true"
     environment:
+      # Force all models onto GPU 0
       - OMNIVOICE_DEVICE=cuda:0
+      # TF32 free speedup on Ampere+ (A100, RTX 30xx/40xx)
+      - TORCH_ALLOW_TF32=1
+      # Disable tokenizer parallelism (we use our own thread pools)
+      - TOKENIZERS_PARALLELISM=false
+      # cuDNN autotuner — finds fastest conv algorithm on first run
+      - CUDNN_BENCHMARK=1
+      # Prevent OOM on models that don't pin memory
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     deploy:
       resources:
         reservations:

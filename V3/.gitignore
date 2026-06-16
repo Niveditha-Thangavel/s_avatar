@@ -23,7 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
-# Python server — keep venv and cache out of git and Vite's file scanner
+# Python — keep venv and cache out of git and Vite's file scanner
+venv/
 server/venv/
 server/__pycache__/
 server/*.pyc

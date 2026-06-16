@@ -94,12 +94,15 @@ export class Avatar3D {
 
   /**
    * Set the server-driven animation matrix.
+   * The render loop drives timing via the AudioContext clock (elapsed seconds
+   * since audio.start()). animationStartTime is only used as a fallback when
+   * the AudioContext elapsed time is not available.
    * @param {{time:number, blendshapes:object}[]} matrix - frames at 30fps
    */
   setAnimationMatrix(matrix) {
     this.currentAnimationMatrix = matrix || [];
     this.activeTargetWeights = {};
-    this.animationStartTime = performance.now() / 1000;
+    this.animationStartTime = performance.now() / 1000;  // fallback only
     this.isSpeaking = this.currentAnimationMatrix.length > 0;
   }
 
@@ -107,6 +110,16 @@ export class Avatar3D {
     this.currentAnimationMatrix = null;
     this.activeTargetWeights = {};
     this.isSpeaking = false;
+
+    // Reset ALL morph target influences to zero so no shape is frozen
+    // on the face after speech ends (prevents puckered-lip resting pose).
+    this.morphMeshes.forEach((mesh) => {
+      if (mesh.morphTargetInfluences) {
+        for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
+          mesh.morphTargetInfluences[i] = 0.0;
+        }
+      }
+    });
   }
 
   loadGLBModel(url) {
@@ -380,57 +393,56 @@ export class Avatar3D {
 
   /**
    * Update blendshape weights from the server animation matrix.
-   * Uses linear interpolation (lerp factor 0.25) for smooth 60Hz/120Hz upsampling.
-   * Traverses all sub-meshes (Head, Teeth, Tongue, etc.) for synchronized updates.
+   *
+   * Uses binary search to find the surrounding frames, then linearly interpolates
+   * between them for smooth 60Hz/120Hz upsampling of the 30FPS matrix.
+   *
+   * @param {number} elapsed - seconds since audio playback started (AudioContext clock)
    */
-  _updateFromMatrix(currentTime) {
-    if (!this.currentAnimationMatrix || this.currentAnimationMatrix.length === 0) {
+  _updateFromMatrix(elapsed) {
+    const mat = this.currentAnimationMatrix;
+    if (!mat || mat.length === 0) return;
+
+    const lastFrame = mat[mat.length - 1];
+
+    // Animation finished — clear and return
+    if (elapsed > lastFrame.time + 0.12) {
+      this.clearAnimation();
       return;
     }
 
-    // Calculate elapsed time since animation started
-    const elapsed = currentTime - this.animationStartTime;
+    // Clamp elapsed to valid range
+    const t = Math.max(0, Math.min(elapsed, lastFrame.time));
 
-    // Find closest frame within 0.02s tolerance
-    let activeFrame = null;
-    for (const frame of this.currentAnimationMatrix) {
-      if (Math.abs(frame.time - elapsed) < 0.02) {
-        activeFrame = frame;
-        break;
-      }
+    // Binary search for the floor frame index
+    let lo = 0, hi = mat.length - 1;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (mat[mid].time <= t) lo = mid; else hi = mid;
     }
 
-    // If no exact match, find the current interval
-    if (!activeFrame) {
-      for (let i = 0; i < this.currentAnimationMatrix.length - 1; i++) {
-        const f = this.currentAnimationMatrix[i];
-        const next = this.currentAnimationMatrix[i + 1];
-        if (elapsed >= f.time && elapsed < next.time) {
-          activeFrame = f;
-          break;
-        }
-      }
-      // Fallback to last frame
-      if (!activeFrame && this.currentAnimationMatrix.length > 0) {
-        activeFrame = this.currentAnimationMatrix[this.currentAnimationMatrix.length - 1];
-      }
+    const frameA = mat[lo];
+    const frameB = mat[lo + 1] || frameA;   // guard: past last frame
+
+    // Interpolation factor in [0, 1]
+    const dt = frameB.time - frameA.time;
+    const alpha = dt > 0.0001 ? Math.min((t - frameA.time) / dt, 1.0) : 0.0;
+
+    // Build interpolated target weights
+    const weights = {};
+    const bsA = frameA.blendshapes;
+    const bsB = frameB.blendshapes;
+    for (const name in bsA) {
+      const a = bsA[name] || 0.0;
+      const b = (bsB[name] !== undefined ? bsB[name] : a);
+      weights[name] = a + (b - a) * alpha;
     }
 
-    if (!activeFrame || !activeFrame.blendshapes) return;
-
-    this.activeTargetWeights = activeFrame.blendshapes;
-
-    // Check if animation is done
-    const lastFrame = this.currentAnimationMatrix[this.currentAnimationMatrix.length - 1];
-    if (lastFrame && elapsed > lastFrame.time + 0.1) {
-      this.clearAnimation();
-    }
+    this.activeTargetWeights = weights;
   }
 
-  render(dt, behavior, _lipsync) {
+  render(dt, behavior, elapsed) {
     if (!this.isLoaded) return;
-
-    const now = performance.now() / 1000;
 
     // ── 1. Head rotation (idle breathing from behavior) ──
     this.setHeadRotation(behavior.rotation.x, behavior.rotation.y, behavior.rotation.z);
@@ -444,26 +456,50 @@ export class Avatar3D {
 
     // ── 4. Server-driven blendshape matrix (animation + emotion) ──
     if (this.isSpeaking) {
-      this._updateFromMatrix(now);
+      // elapsed is AudioContext.currentTime − audioStartTime (precise, monotonic).
+      // Fall back to performance clock when audio context isn't available.
+      const animElapsed = (elapsed !== null && elapsed !== undefined)
+        ? elapsed
+        : (performance.now() / 1000 - this.animationStartTime);
 
-      if (Object.keys(this.activeTargetWeights).length > 0) {
+      this._updateFromMatrix(animElapsed);
+
+      if (this.isSpeaking && Object.keys(this.activeTargetWeights).length > 0) {
+        // Apply interpolated weights directly — NO extra lerp here.
+        // The matrix was already smoothed by PantoMatrix; adding another lerp
+        // introduces lag that breaks the audio↔mouth sync.
         this.morphMeshes.forEach((child) => {
-          Object.keys(this.activeTargetWeights).forEach((shapeName) => {
-            const targetIndex = child.morphTargetDictionary[shapeName];
-            if (targetIndex !== undefined) {
-              const targetValue = this.activeTargetWeights[shapeName];
-              const currentValue = child.morphTargetInfluences[targetIndex];
-              child.morphTargetInfluences[targetIndex] = THREE.MathUtils.lerp(
-                currentValue, targetValue, 0.25
-              );
+          const dict = child.morphTargetDictionary;
+          const inf  = child.morphTargetInfluences;
+          for (const shapeName in this.activeTargetWeights) {
+            // Direct name match
+            let idx = dict[shapeName];
+
+            // Case-insensitive / dot-suffix fallback
+            if (idx === undefined) {
+              const lower = shapeName.toLowerCase();
+              for (const k in dict) {
+                const lk = k.toLowerCase();
+                if (lk === lower || lk.endsWith('.' + lower)) { idx = dict[k]; break; }
+              }
             }
-          });
+
+            // jawOpen ↔ mouthOpen alias
+            if (idx === undefined) {
+              if (shapeName === 'jawOpen' && dict['mouthOpen'] !== undefined) idx = dict['mouthOpen'];
+              else if (shapeName === 'mouthOpen' && dict['jawOpen'] !== undefined) idx = dict['jawOpen'];
+            }
+
+            if (idx !== undefined) {
+              inf[idx] = Math.max(0, Math.min(1, this.activeTargetWeights[shapeName]));
+            }
+          }
         });
       }
     }
 
-    // ── 5. Emotion morph targets (always active, blends with animation) ──
-    if (behavior.emotionWeights) {
+    // ── 5. Emotion morph targets (idle only — server matrix already bakes emotion) ──
+    if (!this.isSpeaking && behavior.emotionWeights) {
       Object.keys(behavior.emotionWeights).forEach((morph) => {
         this.setMorphTarget(morph, behavior.emotionWeights[morph]);
       });

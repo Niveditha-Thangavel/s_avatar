@@ -3,7 +3,7 @@ main.py — Voice Avatar Server  (port 8765)
 
 Pipeline:
   🎤 audio
-    → Whisper v3-Turbo        STT + language detection
+    → Whisper large-v3-turbo   STT + LID
     → SMaLL-100               translate native → English
     → Granite 4.0 Nano        LLM: intent, emotion, English response
     → SMaLL-100               translate English → native (with emotion tokens)
@@ -38,7 +38,13 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 warnings.filterwarnings("ignore", message=".*clean_up_tokenization.*")
 warnings.filterwarnings("ignore", message=".*forced_decoder_ids.*")
 warnings.filterwarnings("ignore", message=".*SuppressTokens.*")
-warnings.filterwarnings("ignore", message=".*multilingual Whisper.*")
+
+# ── CUDA global tuning (no-op on CPU/MPS) ────────────────────────────────────
+import torch
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark      = True
+    torch.backends.cuda.matmul.allow_tf32 = True   # Ampere+: free 10-20% speedup
+    torch.backends.cudnn.allow_tf32       = True
 
 import soundfile as sf
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -46,11 +52,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from tts_engine         import get_model    as load_tts,     synthesize_stream
-from stt_engine         import load_stt_models,              transcribe
-from llm_engine         import load_model   as load_llm,     generate_response
-from translation_engine import load_translation_model,       translate_from_english, translate_to_english
-from pantomatrix        import extract_blendshapes
+from server.tts_engine         import get_model    as load_tts,     synthesize_stream
+from server.stt_engine         import load_stt_models,              transcribe
+from server.llm_engine         import load_model   as load_llm,     generate_response
+from server.translation_engine import load_translation_model,       translate_from_english, translate_to_english
+from server.pantomatrix        import extract_blendshapes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,12 +97,12 @@ class AudioBuffer:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("[Server] Loading: Whisper + Granite + SMaLL-100 + OmniVoice + PantoMatrix …")
-    await asyncio.gather(
-        load_tts(),
-        load_stt_models(),
-        load_llm(),
-        load_translation_model(),
-    )
+    # Sequential loading — asyncio.gather() causes a double-free / MPS allocator
+    # race on macOS when multiple models compete for the MPS memory pool at startup.
+    await load_tts()
+    await load_stt_models()
+    await load_llm()
+    await load_translation_model()
     logger.info("[Server] ✅ All models ready")
     yield
     logger.info("[Server] Shutdown")
@@ -120,15 +126,15 @@ async def serve_audio(audio_id: str):
 
 @app.get("/health")
 async def health():
-    from tts_engine         import _model          as tts_m
-    from stt_engine         import _model          as stt_m
-    from llm_engine         import _model          as llm_m
-    from translation_engine import _model          as trans_m
+    from server.tts_engine         import _model          as tts_m
+    from server.stt_engine         import _pipe           as stt_p
+    from server.llm_engine         import _model          as llm_m
+    from server.translation_engine import _model          as trans_m
     return {
         "status":    "ok",
         "timestamp": time.time(),
-        "omnivoice": "loaded" if tts_m   else "loading",
-        "whisper":   "loaded" if stt_m   else "loading",
+        "omnivoice":  "loaded" if tts_m   else "loading",
+        "whisper":    "loaded" if stt_p   else "loading",
         "granite":   "loaded" if llm_m   else "loading",
         "small100":  "loaded" if trans_m else "loading",
     }
@@ -188,6 +194,7 @@ async def ws_tts(websocket: WebSocket):
                     continue
 
                 await _j(websocket, {"type": "status", "data": "generating"})
+                tts_audio_chunks = []
                 try:
                     async for chunk in synthesize_stream(
                         text=text,
@@ -200,7 +207,26 @@ async def ws_tts(websocket: WebSocket):
                             "byteLength": len(chunk["audio"]),
                         })
                         await websocket.send_bytes(chunk["audio"])
-                    await _j(websocket, {"type": "status", "data": "complete"})
+                        tts_audio_chunks.append(chunk["audio"])
+
+                    # Compute animation matrix from accumulated audio (in thread)
+                    animation_matrix = []
+                    if tts_audio_chunks:
+                        tts_sr     = 24000
+                        full_audio = b"".join(tts_audio_chunks)
+                        try:
+                            loop = asyncio.get_event_loop()
+                            animation_matrix = await loop.run_in_executor(
+                                None, extract_blendshapes, full_audio, tts_sr
+                            )
+                        except Exception as exc:
+                            logger.warning("[TTS-WS] PantoMatrix failed: %s", exc)
+
+                    await _j(websocket, {
+                        "type": "status",
+                        "data": "complete",
+                        "animation_matrix": animation_matrix,
+                    })
                 except Exception as exc:
                     logger.exception("[TTS-WS] Synthesis error: %s", exc)
                     await _j(websocket, {"type": "error", "message": str(exc)})
@@ -258,7 +284,7 @@ async def ws_stt(websocket: WebSocket):
 
                     await _j(websocket, {"type": "status", "data": "transcribing"})
                     try:
-                        original, user_lang = await transcribe(audio)
+                        original, user_lang, user_emotion = await transcribe(audio)
                     except Exception as exc:
                         logger.exception("[STT-WS] Whisper failed: %s", exc)
                         await _j(websocket, {"type": "error", "message": f"STT error: {exc}"})
@@ -280,12 +306,12 @@ async def ws_stt(websocket: WebSocket):
                         logger.warning("[STT-WS] SMaLL-100 returned empty for %s → en, using original", user_lang)
                         english = original
 
-                    logger.info("[STT-WS] lang=%s | original=%s | english=%s",
-                                user_lang, original[:60], english[:60])
+                    logger.info("[STT-WS] lang=%s emotion=%s | original=%s | english=%s",
+                                user_lang, user_emotion, original[:60], english[:60])
 
                     await _j(websocket, {"type": "status", "data": "thinking"})
                     try:
-                        payload = await generate_response(english, session_id=session_id)
+                        payload = await generate_response(english, session_id=session_id, user_emotion=user_emotion)
                     except Exception as exc:
                         logger.exception("[STT-WS] LLM failed: %s", exc)
                         await _j(websocket, {"type": "error", "message": f"LLM error: {exc}"})
@@ -449,14 +475,14 @@ async def api_v1_chat(
 
     # ── 2. Whisper STT ──────────────────────────────────────────────────────
     try:
-        original, user_lang = await transcribe(audio_16k)
+        original, user_lang, user_emotion = await transcribe(audio_16k)
     except Exception as exc:
         raise HTTPException(500, f"STT failed: {exc}")
 
     if not original.strip():
         raise HTTPException(400, "No speech detected in audio")
 
-    logger.info("[API] STT: lang=%s transcript=%s", user_lang, original[:80])
+    logger.info("[API] STT: lang=%s emotion=%s transcript=%s", user_lang, user_emotion, original[:80])
 
     # ── 3. SMaLL-100 → English ──────────────────────────────────────────────
     try:
@@ -468,9 +494,9 @@ async def api_v1_chat(
     if not english.strip():
         english = original
 
-    # ── 4. Granite LLM with emotion tokens ──────────────────────────────────
+    # ── 4. Granite LLM with emotion tokens + user emotion context ───────────
     try:
-        payload = await generate_response(english, session_id=f"api_{uuid.uuid4().hex[:8]}")
+        payload = await generate_response(english, session_id=f"api_{uuid.uuid4().hex[:8]}", user_emotion=user_emotion)
     except Exception as exc:
         raise HTTPException(500, f"LLM failed: {exc}")
 
@@ -520,7 +546,7 @@ async def api_v1_chat(
 
     # Write WAV to bytes in memory
     wav_buffer = io.BytesIO()
-    sf.write(wav_buffer, tts_audio_f32, tts_sr, format="WAV")
+    sf.write(wav_buffer, tts_audio_f32, tts_sr, format="WAV", subtype="FLOAT")
     wav_bytes = wav_buffer.getvalue()
 
     # Store in memory
@@ -539,9 +565,12 @@ async def api_v1_chat(
     logger.info("[API] TTS generated %.2fs audio → stored as %s",
                 len(tts_audio_f32) / tts_sr, audio_id)
 
-    # ── 8. PantoMatrix blendshape extraction ────────────────────────────────
+    # ── 8. PantoMatrix blendshape extraction (in thread — pure NumPy) ──────────
+    loop = asyncio.get_event_loop()
     try:
-        matrix = extract_blendshapes(tts_audio_f32.tobytes(), tts_sr)
+        matrix = await loop.run_in_executor(
+            None, extract_blendshapes, tts_audio_f32.tobytes(), tts_sr
+        )
     except Exception as exc:
         logger.error("[API] PantoMatrix failed: %s", exc)
         matrix = []

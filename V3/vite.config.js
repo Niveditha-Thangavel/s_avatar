@@ -5,7 +5,7 @@ export default defineConfig({
   // Without this it picks up HTML files inside server/venv (torch, gradio, etc.)
   // and fails because they contain no valid JS.
   optimizeDeps: {
-    exclude: [],
+    exclude: ['virtual:cc-init'],
     // Restrict the dependency scan to the actual source root only
   },
 
@@ -13,7 +13,7 @@ export default defineConfig({
     port: 3005,
     // Exclude the Python server directory from the file watcher entirely
     watch: {
-      ignored: ['**/server/**', '**/node_modules/**'],
+      ignored: ['**/server/**', '**/node_modules/**', '**/venv/**'],
     },
     proxy: {
       '/ws': {

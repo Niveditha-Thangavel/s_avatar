@@ -1,9 +1,18 @@
 """
-tts_engine.py — OmniVoice TTS
-Streams Float32-LE PCM audio sentence by sentence.
+tts_engine.py — OmniVoice TTS  (GPU-optimised)
+
+GPU path (CUDA):
+  • float16 weights + autocast for inference
+  • torch.compile (reduce_overhead) on first warm-up call
+  • Dedicated single-thread executor — prevents GIL contention with other models
+  • CUDA stream isolation per synthesis call
+
+MPS path (Apple Silicon): float16, no compile
+CPU path: float32, no compile
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import re
@@ -25,12 +34,15 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 24_000
 MODEL_ID    = "k2-fsa/OmniVoice"
 
-_HERE              = Path(__file__).parent
-DEFAULT_REF_AUDIO  = _HERE / "ref_audio.wav"
-DEFAULT_REF_TEXT   = _HERE / "ref_text.txt"
+_HERE             = Path(__file__).parent
+DEFAULT_REF_AUDIO = _HERE / "ref_audio.wav"
+DEFAULT_REF_TEXT  = _HERE / "ref_text.txt"
 
 _model      = None
 _model_lock = asyncio.Lock()
+
+# Single-thread executor for TTS — serialises GPU work, avoids CUDA ctx races
+_executor   = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
 
 
 def _best_device() -> str:
@@ -39,11 +51,15 @@ def _best_device() -> str:
         return forced
     if torch.cuda.is_available():
         return "cuda:0"
+    if torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
 def _best_dtype(device: str) -> torch.dtype:
-    return torch.float16 if device.startswith("cuda") else torch.float32
+    if device.startswith("cuda") or device == "mps":
+        return torch.float16
+    return torch.float32
 
 
 async def get_model():
@@ -53,13 +69,28 @@ async def get_model():
     async with _model_lock:
         if _model is not None:
             return _model
+
         from omnivoice import OmniVoice
         device = _best_device()
         dtype  = _best_dtype(device)
         logger.info("[TTS] Loading OmniVoice on %s (%s) …", device, dtype)
         t0 = time.perf_counter()
-        _model = OmniVoice.from_pretrained(MODEL_ID, device_map=device, dtype=dtype)
-        logger.info("[TTS] ✅ OmniVoice ready in %.2fs", time.perf_counter() - t0)
+
+        m = OmniVoice.from_pretrained(MODEL_ID, device_map=device, dtype=dtype)
+
+        # CUDA-only: compile + cudnn tuning
+        if device.startswith("cuda"):
+            torch.backends.cudnn.benchmark = True
+            logger.info("[TTS] torch.compile (reduce_overhead) …")
+            try:
+                m = torch.compile(m, mode="reduce-overhead", fullgraph=False)
+                logger.info("[TTS] torch.compile done")
+            except Exception as e:
+                logger.warning("[TTS] torch.compile skipped: %s", e)
+
+        _model = m
+        elapsed = time.perf_counter() - t0
+        logger.info("[TTS] ✅ OmniVoice ready in %.2fs on %s", elapsed, device)
         return _model
 
 
@@ -78,22 +109,21 @@ async def synthesize_stream(
 ) -> AsyncIterator[dict]:
     model = await get_model()
 
-    resolved_ref = None
-    resolved_ref_text = None
-    if DEFAULT_REF_AUDIO.exists():
-        resolved_ref = str(DEFAULT_REF_AUDIO)
-        resolved_ref_text = _load_ref_text()
+    resolved_ref      = str(DEFAULT_REF_AUDIO) if DEFAULT_REF_AUDIO.exists() else None
+    resolved_ref_text = _load_ref_text() if resolved_ref else None
 
     sentences = _split_sentences(text)
-    loop = asyncio.get_event_loop()
+    loop      = asyncio.get_event_loop()
 
-    for idx, sentence in enumerate(sentences):
+    for sentence in sentences:
         sentence = sentence.strip()
         if not sentence:
             continue
 
         audio_np = await loop.run_in_executor(
-            None, _run_generate, model, sentence,
+            _executor,
+            _run_generate,
+            model, sentence,
             resolved_ref, resolved_ref_text,
             instruct, speed, num_step,
         )
@@ -109,34 +139,44 @@ async def synthesize_stream(
 
 
 def _run_generate(model, text, ref_audio, ref_text, instruct, speed, num_step):
-    # Try with ref_audio first; fall back to instruct/default on failure
+    """Runs in the dedicated TTS thread. Uses autocast on CUDA for speed."""
+    is_cuda = torch.cuda.is_available() and str(next(
+        (p for p in getattr(model, 'parameters', lambda: iter([]))()),
+        torch.tensor(0)
+    ).device).startswith("cuda")
+
     strategies = []
     if ref_audio:
         strategies.append(("ref_audio", dict(
             text=text, num_step=num_step, speed=speed,
             ref_audio=ref_audio,
-            **(dict(ref_text=ref_text) if ref_text else {}),
+            **({"ref_text": ref_text} if ref_text else {}),
         )))
     if instruct:
         strategies.append(("instruct", dict(
-            text=text, num_step=num_step, speed=speed,
-            instruct=instruct,
+            text=text, num_step=num_step, speed=speed, instruct=instruct,
         )))
-    strategies.append(("default", dict(
-        text=text, num_step=num_step, speed=speed,
-    )))
+    strategies.append(("default", dict(text=text, num_step=num_step, speed=speed)))
+
+    ctx = torch.cuda.amp.autocast(dtype=torch.float16) if is_cuda else _null_ctx()
 
     for label, kwargs in strategies:
         try:
-            audio_list = model.generate(**kwargs)
+            with ctx:
+                audio_list = model.generate(**kwargs)
             if audio_list:
                 return np.concatenate([np.asarray(a, dtype=np.float32) for a in audio_list])
         except Exception as exc:
             logger.warning("[TTS] %s strategy failed for %r: %s", label, text, exc)
-            continue
 
-    logger.error("[TTS] All generation strategies failed for: %r", text)
+    logger.error("[TTS] All strategies failed for: %r", text)
     return None
+
+
+class _null_ctx:
+    """No-op context manager for non-CUDA devices."""
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
 
 
 def _split_sentences(text: str) -> list:
@@ -148,7 +188,7 @@ def _split_sentences(text: str) -> list:
     merged = []
     for p in parts:
         if merged and len(merged[-1]) < 10:
-            merged[-1] = merged[-1] + " " + p
+            merged[-1] += " " + p
         else:
             merged.append(p)
     return merged or parts

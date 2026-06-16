@@ -7,7 +7,8 @@ const getWsBase = () => {
   if (import.meta.env.VITE_SERVER_URL) {
     return import.meta.env.VITE_SERVER_URL;
   }
-  const host = import.meta.env.VITE_SERVER_HOST || (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' ? window.location.hostname : 'localhost');
+  const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const host = isLocal ? 'localhost' : (import.meta.env.VITE_SERVER_HOST || 'localhost');
   const port = import.meta.env.VITE_SERVER_PORT || '8765';
   return `ws://${host}:${port}`;
 };
@@ -16,13 +17,26 @@ const getHttpBase = () => {
   if (import.meta.env.VITE_HTTP_URL) {
     return import.meta.env.VITE_HTTP_URL;
   }
-  const host = import.meta.env.VITE_SERVER_HOST || (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' ? window.location.hostname : 'localhost');
+  const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const host = isLocal ? 'localhost' : (import.meta.env.VITE_SERVER_HOST || 'localhost');
   const port = import.meta.env.VITE_SERVER_PORT || '8765';
   return `http://${host}:${port}`;
 };
 
 const WS_BASE   = getWsBase();
 const HTTP_BASE = getHttpBase();
+
+// Helper to resume/initialize AudioContext on user gesture
+const ensureAudioContext = () => {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioContext.state === 'suspended') {
+    console.log('[Audio] Resuming AudioContext synchronously on user gesture...');
+    audioContext.resume();
+  }
+  return audioContext;
+};
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 let avatar   = null;
@@ -32,6 +46,8 @@ let stt      = null;
 // Audio playback for server-generated audio
 let audioContext = null;
 let activeAudioSource = null;
+let audioStartTime = 0;
+let isAudioPlaying = false;
 
 let lastFrameTime = performance.now();
 let frameCount = 0;
@@ -136,12 +152,15 @@ async function _speakText(text) {
  */
 async function _speakViaLegacyTTS(text, instruct, speed, numStep) {
   return new Promise((resolve, reject) => {
+    console.log('[TTS-WS] Connecting to:', `${WS_BASE}/ws/tts`);
     const ws = new WebSocket(`${WS_BASE}/ws/tts`);
     ws.binaryType = 'arraybuffer';
 
     const audioChunks = [];
+    let animationMatrix = null;
 
     ws.onopen = () => {
+      console.log('[TTS-WS] Connection opened, sending speak request for text:', text.substring(0, 40) + '...');
       ws.send(JSON.stringify({
         type: 'speak',
         text,
@@ -152,25 +171,35 @@ async function _speakViaLegacyTTS(text, instruct, speed, numStep) {
     };
 
     ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
+      const isBinary = event.data instanceof ArrayBuffer;
+      console.log('[TTS-WS] Message received. Binary:', isBinary, 'Type:', typeof event.data);
+      if (isBinary) {
+        console.log('[TTS-WS] Push binary chunk of size:', event.data.byteLength);
         audioChunks.push(new Float32Array(event.data));
         return;
       }
 
       try {
         const msg = JSON.parse(event.data);
+        console.log('[TTS-WS] Received JSON type:', msg.type, 'data:', msg.data || '');
         if (msg.type === 'chunk') {
           // next message will be binary
         } else if (msg.type === 'status' && msg.data === 'complete') {
+          animationMatrix = msg.animation_matrix || null;
+          console.log('[TTS-WS] Complete message received. Matrix length:', animationMatrix?.length || 0);
           ws.close();
         } else if (msg.type === 'status' && msg.data === 'error') {
           reject(new Error(msg.message || 'TTS error'));
         }
-      } catch {}
+      } catch (err) {
+        console.error('[TTS-WS] JSON parsing error:', err);
+      }
     };
 
     ws.onclose = () => {
+      console.log('[TTS-WS] Connection closed. Total chunks:', audioChunks.length);
       if (audioChunks.length === 0) {
+        console.warn('[TTS-WS] No audio chunks received!');
         resolve();
         return;
       }
@@ -184,47 +213,61 @@ async function _speakViaLegacyTTS(text, instruct, speed, numStep) {
         offset += chunk.length;
       }
 
-      _playAudioBuffer(combined, 24000);
+      console.log('[TTS-WS] Playing combined audio buffer of size:', combined.length);
+      _playAudioBuffer(combined, 24000, animationMatrix);
       updateStatusBadge('speaking');
       updateProgressUI('▶️ Playing…', false);
       resolve();
     };
 
-    ws.onerror = () => reject(new Error('WebSocket error'));
+    ws.onerror = (err) => {
+      console.error('[TTS-WS] WebSocket error:', err);
+      reject(new Error('WebSocket error'));
+    };
   });
 }
 
 /**
  * Play audio through Web Audio API and drive avatar from animation matrix.
+ * IMPORTANT: audioStartTime and setAnimationMatrix must be set atomically —
+ * both use the AudioContext clock so they are perfectly aligned.
  */
 function _playAudioBuffer(audioData, sampleRate, animationMatrix) {
   _stopAudio();
+  console.log('[Audio] _playAudioBuffer called. Data type:', audioData.constructor.name, 'Sample rate:', sampleRate, 'Matrix length:', animationMatrix?.length || 0);
 
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  if (audioContext.state === 'suspended') {
-    audioContext.resume();
-  }
+  ensureAudioContext();
 
-  const buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
-  buffer.getChannelData(0).set(audioData);
+  let buffer;
+  if (audioData instanceof AudioBuffer) {
+    buffer = audioData;
+  } else {
+    buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
+    buffer.getChannelData(0).set(audioData);
+  }
 
   const source = audioContext.createBufferSource();
   source.buffer = buffer;
   source.connect(audioContext.destination);
-  source.start(0);
-  activeAudioSource = source;
 
-  // Set animation matrix if provided
-  if (animationMatrix) {
+  // Capture the exact AudioContext start time BEFORE source.start()
+  // then prime the animation matrix immediately — zero offset between audio and blendshapes.
+  audioStartTime = audioContext.currentTime;
+  isAudioPlaying = true;
+
+  if (animationMatrix && animationMatrix.length > 0) {
     avatar.setAnimationMatrix(animationMatrix);
   }
 
+  source.start(0);
+  activeAudioSource = source;
+
   source.onended = () => {
     activeAudioSource = null;
+    isAudioPlaying = false;
     avatar.clearAnimation();
     updateStatusBadge('idle');
+    updateProgressUI('', false);
   };
 }
 
@@ -233,6 +276,7 @@ function _stopAudio() {
     try { activeAudioSource.stop(); } catch {}
     activeAudioSource = null;
   }
+  isAudioPlaying = false;
   avatar.clearAnimation();
 }
 
@@ -263,31 +307,19 @@ async function _sendAudioToUnifiedAPI(audioBlob) {
 
     // Fetch the audio from the returned URL
     const audioRes = await fetch(audio_url);
-    const audioBuffer = await audioRes.arrayBuffer();
+    const audioArrayBuffer = await audioRes.arrayBuffer();
 
-    // Parse WAV to extract raw float32 PCM
-    const view = new DataView(audioBuffer);
-    let offset = 12;
-    let dataSize = 0;
-    while (offset < view.byteLength) {
-      const chunkId = String.fromCharCode(
-        view.getUint8(offset), view.getUint8(offset + 1),
-        view.getUint8(offset + 2), view.getUint8(offset + 3)
-      );
-      const chunkSize = view.getUint32(offset + 4, true);
-      if (chunkId === 'data') {
-        dataSize = chunkSize;
-        offset += 8;
-        break;
-      }
-      offset += 8 + chunkSize;
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
-    const pcmData = new Float32Array(dataSize / 4);
-    for (let i = 0; i < pcmData.length; i++) {
-      pcmData[i] = view.getFloat32(offset + i * 4, true);
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume();
     }
 
-    _playAudioBuffer(pcmData, 24000, animation_matrix);
+    // Decode WAV container natively (handles sample rates and formats automatically)
+    const decodedBuffer = await audioContext.decodeAudioData(audioArrayBuffer);
+
+    _playAudioBuffer(decodedBuffer, decodedBuffer.sampleRate, animation_matrix);
     updateStatusBadge('speaking');
   } catch (err) {
     console.error('[UnifiedAPI]', err);
@@ -301,6 +333,7 @@ function setupEventListeners() {
 
   // Speak button — typed text
   document.getElementById('btn-speak')?.addEventListener('click', async () => {
+    ensureAudioContext();
     const text = document.getElementById('text-input')?.value?.trim();
     if (!text) return;
 
@@ -338,6 +371,7 @@ function setupEventListeners() {
   const btnMic = document.getElementById('btn-mic');
   if (btnMic) {
     btnMic.addEventListener('click', async () => {
+      ensureAudioContext();
       if (stt.isListening) {
         btnMic.classList.remove('active');
         btnMic.innerHTML = '<span class="btn-icon">⏳</span> Processing…';
@@ -346,14 +380,23 @@ function setupEventListeners() {
         // Stop recording
         stt.stop();
 
-        // Use unified /api/v1/chat endpoint
+        // Use unified /api/v1/chat endpoint exclusively.
+        // Permanently suppress the legacy onReply → _speakViaLegacyTTS path —
+        // the unified API already returns audio + animation matrix.
+        // The typed text "Speak" button bypasses STT entirely, so it's safe.
+        stt.onReply = (reply) => {
+          console.log('[STT] Reply (suppressed):', reply);
+          const text = reply?.native_text || reply?.reply || '';
+          const ta = document.getElementById('text-input');
+          if (ta) ta.value = `🤖 Avatar: ${text}`;
+        };
+
         try {
           const blob = await stt.getRecordingBlob();
           updateProgressUI('📤 Sending to server…', true);
           await _sendAudioToUnifiedAPI(blob);
         } catch (err) {
           console.error('[Mic->Unified]', err);
-          // Fallback: rely on WS reply (onReply callback will fire)
         }
       } else {
         try {
@@ -430,7 +473,13 @@ function renderLoop() {
 
   behavior.update(dt);
 
-  if (avatar) avatar.render(dt, behavior, null);
+  // Calculate elapsed time from the precise AudioContext clock if playing
+  let elapsed = null;
+  if (isAudioPlaying && audioContext) {
+    elapsed = audioContext.currentTime - audioStartTime;
+  }
+
+  if (avatar) avatar.render(dt, behavior, elapsed);
 }
 
 // ── HUD & status ──────────────────────────────────────────────────────────────

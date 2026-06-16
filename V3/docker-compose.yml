@@ -10,7 +10,6 @@ services:
       - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
-      - WHISPER_CACHE=/root/.cache/whisper
       - OMNIVOICE_DEVICE=cpu
     restart: unless-stopped
     healthcheck:
