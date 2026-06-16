@@ -193,8 +193,6 @@ async def transcribe(audio_np: np.ndarray) -> Tuple[str, str, str]:
                     "language": None,          # auto-detect
                     "task": "transcribe",
                     "temperature": 0.0,        # greedy — fastest + most stable
-                    "compression_ratio_threshold": 2.4,
-                    "no_speech_threshold": 0.6,
                 },
             )
         text = result.get("text", "").strip()
