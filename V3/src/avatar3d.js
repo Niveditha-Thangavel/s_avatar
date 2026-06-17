@@ -28,6 +28,19 @@ export class Avatar3D {
     this.animationStartTime = 0;
     this.isSpeaking = false;
 
+    // ── Suit / clothing mesh color ────────────────────────────────────────
+    // Maps emotion name → THREE.Color hex. Applied to non-skin meshes.
+    this._emotionSuitColors = {
+      neutral:   0x2255aa,   // calm blue
+      happy:     0xf5a623,   // warm amber/orange
+      sad:       0x4a6fa5,   // muted steel blue
+      angry:     0xcc2200,   // deep red
+      surprised: 0x9b59b6,   // vivid purple
+    };
+    this._currentSuitColor  = new THREE.Color(0x2255aa);
+    this._targetSuitColor   = new THREE.Color(0x2255aa);
+    this._suitMeshes        = [];   // populated after model loads
+
     this.init();
   }
 
@@ -122,6 +135,30 @@ export class Avatar3D {
     });
   }
 
+  /**
+   * Set the current emotion — updates suit color target and behavior emotion.
+   * @param {string} emotion - one of: neutral | happy | sad | angry | surprised
+   */
+  setEmotion(emotion) {
+    const hex = this._emotionSuitColors[emotion] ?? this._emotionSuitColors.neutral;
+    this._targetSuitColor.setHex(hex);
+  }
+
+  /**
+   * Lerp suit mesh colors toward the target each frame.
+   * @param {number} dt - delta time in seconds
+   */
+  _updateSuitColor(dt) {
+    if (this._suitMeshes.length === 0) return;
+    const t = 1 - Math.exp(-2 * dt);   // smooth ~0.5s transition
+    this._currentSuitColor.lerp(this._targetSuitColor, t);
+    this._suitMeshes.forEach((mesh) => {
+      if (mesh.material && mesh.material.color) {
+        mesh.material.color.copy(this._currentSuitColor);
+      }
+    });
+  }
+
   loadGLBModel(url) {
     const loader = new GLTFLoader();
     this.isLoaded = false;
@@ -189,6 +226,14 @@ export class Avatar3D {
 
             if (node.morphTargetDictionary && node.morphTargetInfluences) {
               this.morphMeshes.push(node);
+            }
+
+            // Detect suit/clothing meshes — anything that isn't skin/head/hair/eye
+            const skip = /skin|head|hair|eye|teeth|tongue|eyelash|eyebrow/i;
+            if (node.material && !skip.test(node.name) && !skip.test(node.material.name || '')) {
+              // Clone the material so we can change colour independently
+              node.material = node.material.clone();
+              this._suitMeshes.push(node);
             }
           }
         });
@@ -454,7 +499,7 @@ export class Avatar3D {
     this.setGaze(behavior.gazeOffset.x * 20.0, behavior.gazeOffset.y * 20.0);
     this.setBlink(behavior.blinkVal);
 
-    // ── 4. Server-driven blendshape matrix (animation + emotion) ──
+    // ── 5. Server-driven blendshape matrix (animation + emotion) ──
     if (this.isSpeaking) {
       // elapsed is AudioContext.currentTime − audioStartTime (precise, monotonic).
       // Fall back to performance clock when audio context isn't available.
@@ -498,15 +543,16 @@ export class Avatar3D {
       }
     }
 
-    // ── 5. Emotion morph targets (idle only — server matrix already bakes emotion) ──
+    // ── 6. Emotion morph targets (idle only — server matrix already bakes emotion) ──
     if (!this.isSpeaking && behavior.emotionWeights) {
       Object.keys(behavior.emotionWeights).forEach((morph) => {
         this.setMorphTarget(morph, behavior.emotionWeights[morph]);
       });
     }
 
-    // ── 6. Render ──
+    // ── 7. Render ──
     this.controls.update();
+    this._updateSuitColor(dt);
     this.renderer.render(this.scene, this.camera);
   }
 }

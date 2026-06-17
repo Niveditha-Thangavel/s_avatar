@@ -8,3 +8,6 @@ server/venv/
 server/__pycache__/
 **/__pycache__/
 **/*.pyc
+
+# Dev/test files — not needed in Docker build context
+emotion-test.html

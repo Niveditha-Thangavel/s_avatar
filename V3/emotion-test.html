@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Emotion + Body + Suit Color Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d0d0d; color: #eee; font-family: 'Segoe UI', monospace;
+           display: flex; height: 100vh; overflow: hidden; }
+
+    #viewport { flex: 1; position: relative; min-width: 0; }
+
+    #panel { width: 360px; background: #141414; border-left: 1px solid #2a2a2a;
+             display: flex; flex-direction: column; overflow-y: auto; }
+
+    /* ── HUD overlay ── */
+    #hud { position: fixed; top: 12px; left: 12px; display: flex; flex-direction: column;
+           gap: 6px; pointer-events: none; z-index: 100; }
+    .hud-chip { background: rgba(0,0,0,0.72); border: 1px solid #333; border-radius: 20px;
+                padding: 4px 12px; font-size: 12px; }
+    .hud-chip span { color: #0f0; font-weight: 700; }
+
+    /* ── Sections ── */
+    .section { padding: 14px 16px; border-bottom: 1px solid #222; }
+    .section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
+                  color: #666; margin-bottom: 10px; }
+
+    /* ── Emotion grid ── */
+    .emotion-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .emo-btn { background: #1e1e1e; border: 2px solid #333; border-radius: 8px;
+               padding: 10px 4px; cursor: pointer; text-align: center;
+               transition: border-color .2s, background .2s; }
+    .emo-btn:hover { border-color: #555; background: #252525; }
+    .emo-btn.active { border-color: var(--ec); background: color-mix(in srgb, var(--ec) 18%, #1e1e1e); }
+    .emo-btn .icon { font-size: 22px; display: block; margin-bottom: 3px; }
+    .emo-btn .label { font-size: 11px; color: #bbb; }
+
+    /* ── Auto-cycle ── */
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button.pill { background: #1e1e1e; border: 1px solid #444; border-radius: 20px;
+                  color: #eee; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+    button.pill:hover { background: #2a2a2a; border-color: #0f0; }
+    button.pill.active { background: #0a2a0a; border-color: #0f0; color: #0f0; }
+
+    /* ── Sliders ── */
+    .slider-row { margin-bottom: 8px; }
+    .slider-row label { font-size: 11px; color: #888; display: flex;
+                        justify-content: space-between; margin-bottom: 3px; }
+    .slider-row label span { color: #0f0; }
+    input[type=range] { width: 100%; accent-color: #0f0; }
+
+    /* ── Log ── */
+    #log { flex: 1; overflow-y: auto; padding: 10px 14px;
+           font-size: 11px; line-height: 1.7; min-height: 160px;
+           background: #0a0a0a; }
+    .log-pass { color: #0f0; }
+    .log-fail { color: #f44; }
+    .log-info { color: #aaa; }
+    .log-warn { color: #fa0; }
+    .log-head { color: #0af; font-weight: 700; border-top: 1px solid #222;
+                padding-top: 4px; margin-top: 2px; }
+
+    /* ── Results bar ── */
+    #results { padding: 10px 16px; background: #111; border-top: 1px solid #222;
+               font-size: 12px; display: flex; gap: 16px; }
+    #results span { color: #666; }
+    #res-pass { color: #0f0; font-weight: 700; }
+    #res-fail { color: #f44; font-weight: 700; }
+
+    /* ── Colour swatch ── */
+    #suit-swatch { width: 28px; height: 28px; border-radius: 50%;
+                   border: 2px solid #444; display: inline-block;
+                   vertical-align: middle; margin-left: 8px; }
+  </style>
+</head>
+<body>
+
+<div id="viewport"></div>
+
+<div id="hud">
+  <div class="hud-chip">FPS <span id="hud-fps">0</span></div>
+  <div class="hud-chip">Emotion <span id="hud-emo">happy</span></div>
+  <div class="hud-chip">Suit <span id="hud-suit">#2255aa</span><span id="suit-swatch"></span></div>
+  <div class="hud-chip">Breath speed <span id="hud-bs">1.80</span></div>
+  <div class="hud-chip">Head bias Y <span id="hud-by">0.00</span></div>
+  <div class="hud-chip">Suit meshes <span id="hud-sm">0</span></div>
+</div>
+
+<div id="panel">
+
+  <!-- Emotion buttons -->
+  <div class="section">
+    <h2>Emotion — manual</h2>
+    <div class="emotion-grid" id="emo-grid">
+      <div class="emo-btn active" data-emotion="happy"
+           style="--ec:#f5a623">
+        <span class="icon">😊</span><span class="label">Happy</span>
+      </div>
+      <div class="emo-btn" data-emotion="sad" style="--ec:#4a6fa5">
+        <span class="icon">😢</span><span class="label">Sad</span>
+      </div>
+      <div class="emo-btn" data-emotion="angry" style="--ec:#cc2200">
+        <span class="icon">😠</span><span class="label">Angry</span>
+      </div>
+      <div class="emo-btn" data-emotion="surprised" style="--ec:#9b59b6">
+        <span class="icon">😲</span><span class="label">Surprised</span>
+      </div>
+      <div class="emo-btn" data-emotion="neutral" style="--ec:#2255aa">
+        <span class="icon">😐</span><span class="label">Neutral</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auto-cycle -->
+  <div class="section">
+    <h2>Auto-cycle test</h2>
+    <div class="row">
+      <button class="pill" id="btn-cycle">▶ Start Cycle</button>
+      <button class="pill" id="btn-stop-cycle">■ Stop</button>
+      <button class="pill" id="btn-run-all">🧪 Run All Tests</button>
+    </div>
+    <div style="margin-top:10px;" class="slider-row">
+      <label>Cycle interval (s) <span id="val-interval">3.0</span></label>
+      <input type="range" id="sl-interval" min="1" max="8" step="0.5" value="3" />
+    </div>
+  </div>
+
+  <!-- Simulated LLM response -->
+  <div class="section">
+    <h2>Simulated LLM response</h2>
+    <div class="row" style="flex-wrap:wrap; gap:6px;">
+      <button class="pill" data-llm='{"emotion":"happy","response":"That is wonderful news! I am so glad to hear that."}'>😊 Happy reply</button>
+      <button class="pill" data-llm='{"emotion":"sad","response":"I am really sorry to hear that. That sounds very difficult."}'>😢 Sad reply</button>
+      <button class="pill" data-llm='{"emotion":"angry","response":"That is completely unacceptable. I understand your frustration."}'>😠 Angry reply</button>
+      <button class="pill" data-llm='{"emotion":"surprised","response":"Wow, I did not expect that at all!"}'>😲 Surprised reply</button>
+      <button class="pill" data-llm='{"emotion":"neutral","response":"I see. Let me look into that for you."}'>😐 Neutral reply</button>
+    </div>
+  </div>
+
+  <!-- Body motion params -->
+  <div class="section">
+    <h2>Body motion (live read-back)</h2>
+    <div class="slider-row">
+      <label>Breath speed <span id="rb-bs">1.80</span></label>
+      <input type="range" id="rb-bs-bar" min="0" max="4" step="0.01" value="1.8" disabled />
+    </div>
+    <div class="slider-row">
+      <label>Breath amplitude <span id="rb-ba">0.022</span></label>
+      <input type="range" id="rb-ba-bar" min="0" max="0.06" step="0.001" value="0.022" disabled />
+    </div>
+    <div class="slider-row">
+      <label>Sway amplitude <span id="rb-sw">0.020</span></label>
+      <input type="range" id="rb-sw-bar" min="0" max="0.06" step="0.001" value="0.02" disabled />
+    </div>
+    <div class="slider-row">
+      <label>Head bias Y <span id="rb-by">0.00</span></label>
+      <input type="range" id="rb-by-bar" min="-0.1" max="0.1" step="0.001" value="0" disabled />
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="section" style="padding-bottom:0; border-bottom:none;">
+    <h2>Test log</h2>
+  </div>
+  <div id="log"></div>
+
+  <!-- Results -->
+  <div id="results">
+    <span>Tests: <strong id="res-total">0</strong></span>
+    <span id="res-pass">✔ 0 passed</span>
+    <span id="res-fail">✖ 0 failed</span>
+    <button class="pill" id="btn-clear-log" style="margin-left:auto">Clear</button>
+  </div>
+
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { Avatar3D }        from './src/avatar3d.js';
+import { BehaviorManager } from './src/behavior.js';
+
+// ── Module scripts run after DOM is parsed, so elements exist.
+// One rAF gives the browser time to compute layout so getBoundingClientRect
+// on #viewport returns real pixel dimensions before Three.js reads them.
+const avatar   = new Avatar3D('viewport', '/avatar_head.glb');
+const behavior = new BehaviorManager();
+
+// ── Test harness ──────────────────────────────────────────────────────────────
+let passed = 0, failed = 0;
+
+function log(msg, cls = 'log-info') {
+  const el = document.getElementById('log');
+  const d  = document.createElement('div');
+  d.className = cls;
+  d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+}
+
+function logHead(msg) { log(msg, 'log-head'); }
+
+function assert(condition, description) {
+  const total = ++passed + failed - (condition ? 0 : 1) + (condition ? 0 : 1);
+  if (condition) {
+    passed++;
+    log(`  ✔ ${description}`, 'log-pass');
+  } else {
+    failed++;
+    log(`  ✖ ${description}`, 'log-fail');
+  }
+  document.getElementById('res-total').textContent = passed + failed;
+  document.getElementById('res-pass').textContent  = `✔ ${passed} passed`;
+  document.getElementById('res-fail').textContent  = `✖ ${failed} failed`;
+}
+
+// ── Emotion colour table (mirrors avatar3d.js) ────────────────────────────────
+const SUIT_COLORS = {
+  neutral:   0x2255aa,
+  happy:     0xf5a623,
+  sad:       0x4a6fa5,
+  angry:     0xcc2200,
+  surprised: 0x9b59b6,
+};
+const BODY_PARAMS = {
+  neutral:   { breathSpeed: 1.8,  breathAmp: 0.022, swayAmp: 0.02,  headBiasY: 0.00 },
+  happy:     { breathSpeed: 2.4,  breathAmp: 0.030, swayAmp: 0.035, headBiasY: 0.04 },
+  sad:       { breathSpeed: 1.2,  breathAmp: 0.015, swayAmp: 0.008, headBiasY: -0.06 },
+  angry:     { breathSpeed: 3.2,  breathAmp: 0.038, swayAmp: 0.012, headBiasY: 0.00 },
+  surprised: { breathSpeed: 2.8,  breathAmp: 0.035, swayAmp: 0.025, headBiasY: 0.05 },
+};
+
+// ── Apply emotion (mirrors main.js _applyEmotion) ────────────────────────────
+function applyEmotion(emotion) {
+  const valid = Object.keys(SUIT_COLORS);
+  const e = valid.includes(emotion) ? emotion : 'neutral';
+  behavior.currentEmotion = e;
+  avatar.setEmotion(e);
+  document.getElementById('hud-emo').textContent = e;
+  // Update button states
+  document.querySelectorAll('.emo-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.emotion === e);
+  });
+  log(`→ applyEmotion("${e}")`, 'log-info');
+}
+
+// ── Unit tests (run after model loads) ───────────────────────────────────────
+function runAllTests() {
+  if (!avatar.isLoaded) { log('Model not loaded yet — try again in a moment', 'log-warn'); return; }
+  passed = 0; failed = 0;
+  document.getElementById('log').innerHTML = '';
+
+  // ── 1. BehaviorManager — emotion body params ──────────────────────────
+  logHead('1. BehaviorManager — emotion body params');
+  Object.entries(BODY_PARAMS).forEach(([emo, expected]) => {
+    behavior.currentEmotion = emo;
+    // Simulate enough dt to fully converge (~3s at 60fps)
+    for (let i = 0; i < 180; i++) behavior.update(1/60);
+
+    const bp = behavior._bodyParams;
+    assert(Math.abs(bp.breathSpeed - expected.breathSpeed) < 0.05,
+      `${emo}: breathSpeed ≈ ${expected.breathSpeed} (got ${bp.breathSpeed.toFixed(3)})`);
+    assert(Math.abs(bp.breathAmp - expected.breathAmp) < 0.003,
+      `${emo}: breathAmp ≈ ${expected.breathAmp} (got ${bp.breathAmp.toFixed(4)})`);
+    assert(Math.abs(bp.headBiasY - expected.headBiasY) < 0.005,
+      `${emo}: headBiasY ≈ ${expected.headBiasY} (got ${bp.headBiasY.toFixed(4)})`);
+  });
+
+  // ── 2. BehaviorManager — emotionWeights converge ─────────────────────
+  logHead('2. BehaviorManager — emotionWeights convergence');
+  behavior.currentEmotion = 'happy';
+  for (let i = 0; i < 120; i++) behavior.update(1/60);
+  assert(behavior.emotionWeights.mouthSmileLeft  > 0.40, 'happy: mouthSmileLeft > 0.40');
+  assert(behavior.emotionWeights.mouthSmileRight > 0.40, 'happy: mouthSmileRight > 0.40');
+
+  behavior.currentEmotion = 'sad';
+  for (let i = 0; i < 120; i++) behavior.update(1/60);
+  assert(behavior.emotionWeights.mouthFrownLeft  > 0.45, 'sad: mouthFrownLeft > 0.45');
+  assert(behavior.emotionWeights.mouthSmileLeft  < 0.05, 'sad: mouthSmileLeft cleared');
+
+  behavior.currentEmotion = 'angry';
+  for (let i = 0; i < 120; i++) behavior.update(1/60);
+  assert(behavior.emotionWeights.browDownLeft > 0.55, 'angry: browDownLeft > 0.55');
+
+  behavior.currentEmotion = 'surprised';
+  for (let i = 0; i < 120; i++) behavior.update(1/60);
+  assert(behavior.emotionWeights.eyeWideLeft > 0.40, 'surprised: eyeWideLeft > 0.40');
+
+  behavior.currentEmotion = 'neutral';
+  for (let i = 0; i < 120; i++) behavior.update(1/60);
+  const allNeutral = Object.values(behavior.emotionWeights).every(v => v < 0.05);
+  assert(allNeutral, 'neutral: all weights cleared to ~0');
+
+  // ── 3. Avatar3D — setEmotion updates target suit color ───────────────
+  logHead('3. Avatar3D — setEmotion() suit color target');
+  Object.entries(SUIT_COLORS).forEach(([emo, hex]) => {
+    avatar.setEmotion(emo);
+    const target = avatar._targetSuitColor;
+    const expected = new THREE.Color(hex);
+    const diff = Math.abs(target.r - expected.r)
+               + Math.abs(target.g - expected.g)
+               + Math.abs(target.b - expected.b);
+    assert(diff < 0.01, `${emo}: targetSuitColor = #${hex.toString(16).padStart(6,'0')}`);
+  });
+
+  // ── 4. Avatar3D — suit color lerps toward target ──────────────────────
+  logHead('4. Avatar3D — suit color lerp');
+  avatar.setEmotion('angry');   // target = red
+  const before = avatar._currentSuitColor.clone();
+  // Simulate 60 frames of dt=1/60
+  for (let i = 0; i < 60; i++) avatar._updateSuitColor(1/60);
+  const after = avatar._currentSuitColor.clone();
+  const moved = after.r - before.r; // red channel should increase toward cc2200
+  assert(moved > 0.01, `suit color moved toward red (Δr = ${moved.toFixed(4)})`);
+
+  // ── 5. Suit mesh detection ────────────────────────────────────────────
+  logHead('5. Avatar3D — suit mesh detection');
+  const suitCount = avatar._suitMeshes.length;
+  document.getElementById('hud-sm').textContent = suitCount;
+  if (suitCount > 0) {
+    assert(true, `found ${suitCount} suit mesh(es)`);
+    // Verify each has a cloned material (not shared)
+    const uniqueMaterials = new Set(avatar._suitMeshes.map(m => m.material.uuid));
+    assert(uniqueMaterials.size === suitCount, 'each suit mesh has its own cloned material');
+  } else {
+    log('  ℹ model has no detectable clothing meshes — suit color test skipped', 'log-warn');
+  }
+
+  // ── 6. Blinking state machine ─────────────────────────────────────────
+  logHead('6. BehaviorManager — blinking');
+  behavior.blinkState = 'idle';
+  behavior.blinkTimer = 0;
+  behavior.nextBlinkInterval = 100; // force blink quickly (ms)
+  behavior.update(0.2);             // advance 200ms
+  assert(behavior.blinkState !== 'idle', 'blink state machine advanced from idle');
+
+  // ── 7. LLM emotion parsing simulation ────────────────────────────────
+  logHead('7. Simulated LLM response → emotion mapping');
+  const llmResponses = [
+    { emotion: 'happy',     response: 'That is great news!' },
+    { emotion: 'sad',       response: 'I am sorry to hear that.' },
+    { emotion: 'angry',     response: 'That is unacceptable!' },
+    { emotion: 'surprised', response: 'Wow, really?' },
+    { emotion: 'neutral',   response: 'I see, understood.' },
+    { emotion: 'unknown_xyz', response: 'fallback test' },  // invalid → neutral
+  ];
+  const valid = Object.keys(SUIT_COLORS);
+  llmResponses.forEach(resp => {
+    const mapped = valid.includes(resp.emotion) ? resp.emotion : 'neutral';
+    behavior.currentEmotion = mapped;
+    avatar.setEmotion(mapped);
+    assert(behavior.currentEmotion === mapped,
+      `LLM emotion "${resp.emotion}" → behavior.currentEmotion = "${mapped}"`);
+    const col = avatar._targetSuitColor;
+    const exp = new THREE.Color(SUIT_COLORS[mapped]);
+    const d = Math.abs(col.r-exp.r)+Math.abs(col.g-exp.g)+Math.abs(col.b-exp.b);
+    assert(d < 0.01, `LLM emotion "${resp.emotion}" → correct suit color`);
+  });
+
+  // ── 8. Transition — emotion switch mid-cycle ──────────────────────────
+  logHead('8. Mid-cycle emotion transition');
+  behavior.currentEmotion = 'happy';
+  for (let i = 0; i < 30; i++) behavior.update(1/60);  // partial transition
+  const midSmile = behavior.emotionWeights.mouthSmileLeft;
+  behavior.currentEmotion = 'sad';
+  for (let i = 0; i < 30; i++) behavior.update(1/60);
+  const afterSwitch = behavior.emotionWeights.mouthSmileLeft;
+  assert(afterSwitch < midSmile, `smile weight decreasing after switch to sad (${midSmile.toFixed(3)} → ${afterSwitch.toFixed(3)})`);
+  assert(behavior.emotionWeights.mouthFrownLeft > 0, 'frown weight building after switch to sad');
+
+  // Reset to happy for visual demo
+  applyEmotion('happy');
+  log('', 'log-info');
+  log(`All tests complete — ${passed} passed, ${failed} failed`, failed === 0 ? 'log-pass' : 'log-fail');
+}
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+let lastT = performance.now(), fpsF = 0, fpsT = 0;
+
+function renderLoop() {
+  requestAnimationFrame(renderLoop);
+  const now = performance.now();
+  const dt  = Math.min((now - lastT) / 1000, 0.05);
+  lastT = now;
+  fpsF++; fpsT += dt;
+  if (fpsT >= 0.5) {
+    document.getElementById('hud-fps').textContent = Math.round(fpsF / fpsT);
+    fpsF = 0; fpsT = 0;
+  }
+
+  behavior.update(dt);
+  avatar.render(dt, behavior, null);
+
+  // Live read-back of body params → panel
+  const bp = behavior._bodyParams;
+  document.getElementById('hud-bs').textContent = bp.breathSpeed.toFixed(2);
+  document.getElementById('hud-by').textContent = bp.headBiasY.toFixed(3);
+  document.getElementById('rb-bs').textContent  = bp.breathSpeed.toFixed(3);
+  document.getElementById('rb-ba').textContent  = bp.breathAmp.toFixed(4);
+  document.getElementById('rb-sw').textContent  = bp.swayAmp.toFixed(4);
+  document.getElementById('rb-by').textContent  = bp.headBiasY.toFixed(4);
+  document.getElementById('rb-bs-bar').value    = bp.breathSpeed;
+  document.getElementById('rb-ba-bar').value    = bp.breathAmp;
+  document.getElementById('rb-sw-bar').value    = bp.swayAmp;
+  document.getElementById('rb-by-bar').value    = bp.headBiasY;
+
+  // Suit swatch
+  const sc = avatar._currentSuitColor;
+  const hex = '#' + [sc.r, sc.g, sc.b]
+    .map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+  document.getElementById('hud-suit').textContent = hex + ' ';
+  document.getElementById('suit-swatch').style.background = hex;
+}
+// ── Start render loop ─────────────────────────────────────────────────────────
+renderLoop();
+
+// ── Auto-cycle ────────────────────────────────────────────────────────────────
+const EMOTIONS = ['happy', 'sad', 'angry', 'surprised', 'neutral'];
+let cycleTimer = null, cycleIdx = 0;
+
+function startCycle() {
+  document.getElementById('btn-cycle').classList.add('active');
+  const interval = parseFloat(document.getElementById('sl-interval').value) * 1000;
+  const step = () => {
+    const e = EMOTIONS[cycleIdx % EMOTIONS.length];
+    applyEmotion(e);
+    log(`[cycle] → ${e}`, 'log-warn');
+    cycleIdx++;
+    cycleTimer = setTimeout(step, interval);
+  };
+  step();
+}
+
+function stopCycle() {
+  if (cycleTimer) { clearTimeout(cycleTimer); cycleTimer = null; }
+  document.getElementById('btn-cycle').classList.remove('active');
+}
+
+document.getElementById('btn-cycle').addEventListener('click', () => {
+  if (cycleTimer) stopCycle(); else startCycle();
+});
+document.getElementById('btn-stop-cycle').addEventListener('click', stopCycle);
+document.getElementById('sl-interval').addEventListener('input', (e) => {
+  document.getElementById('val-interval').textContent = parseFloat(e.target.value).toFixed(1);
+});
+
+// ── Manual emotion buttons ─────────────────────────────────────────────────
+document.getElementById('emo-grid').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-emotion]');
+  if (!btn) return;
+  stopCycle();
+  applyEmotion(btn.dataset.emotion);
+});
+
+// ── Simulated LLM buttons ──────────────────────────────────────────────────
+document.querySelectorAll('[data-llm]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const payload = JSON.parse(btn.dataset.llm);
+    log(`[LLM sim] emotion="${payload.emotion}" → "${payload.response.substring(0,50)}"`, 'log-warn');
+    const valid = Object.keys(SUIT_COLORS);
+    const e = valid.includes(payload.emotion) ? payload.emotion : 'neutral';
+    applyEmotion(e);
+  });
+});
+
+// ── Run all tests button ───────────────────────────────────────────────────
+document.getElementById('btn-run-all').addEventListener('click', runAllTests);
+document.getElementById('btn-clear-log').addEventListener('click', () => {
+  document.getElementById('log').innerHTML = '';
+  passed = 0; failed = 0;
+  document.getElementById('res-total').textContent = 0;
+  document.getElementById('res-pass').textContent  = '✔ 0 passed';
+  document.getElementById('res-fail').textContent  = '✖ 0 failed';
+});
+
+// ── Run tests automatically after model loads ──────────────────────────────
+window.addEventListener('avatar-loaded', () => {
+  log('Model loaded — running tests…', 'log-warn');
+  document.getElementById('hud-sm').textContent = avatar._suitMeshes.length;
+  setTimeout(runAllTests, 300); // short delay so first render completes
+});
+</script>
+</body>
+</html>

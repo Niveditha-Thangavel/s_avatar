@@ -78,6 +78,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     const ta = document.getElementById('text-input');
     if (ta) ta.value = `🤖 Avatar: ${text}`;
     updateProgressUI('🔊 Generating speech…', true);
+    _applyEmotion(reply?.emotion);
     _speakText(text);
   };
 
@@ -120,7 +121,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   requestAnimationFrame(renderLoop);
 });
 
-// ── Core speak function ───────────────────────────────────────────────────────
+// ── Apply emotion to avatar + behavior ───────────────────────────────────────
+function _applyEmotion(emotion) {
+  if (!emotion) return;
+  const valid = ['neutral', 'happy', 'sad', 'angry', 'surprised'];
+  const e = valid.includes(emotion) ? emotion : 'neutral';
+  if (behavior) behavior.currentEmotion = e;
+  if (avatar)   avatar.setEmotion(e);
+  // Update the dropdown to reflect current emotion
+  const sel = document.getElementById('emotion-select');
+  if (sel) sel.value = e;
+  console.log(`[Emotion] Applied: ${e}`);
+}
 /**
  * Speak text via the server's /api/v1/chat endpoint.
  * Receives audio_url + animation_matrix, plays audio and drives blendshapes.
@@ -301,7 +313,10 @@ async function _sendAudioToUnifiedAPI(audioBlob) {
     }
 
     const data = await res.json();
-    const { audio_url, animation_matrix } = data;
+    const { audio_url, animation_matrix, emotion } = data;
+
+    // Apply emotion to avatar body + suit color
+    _applyEmotion(emotion);
 
     updateProgressUI('🔊 Playing response…', true);
 
@@ -351,6 +366,7 @@ function setupEventListeners() {
       if (reply && (reply.native_text || reply.reply)) {
         const native = reply.native_text || reply.reply || text;
         document.getElementById('text-input').value = `🤖 Avatar: ${native}`;
+        _applyEmotion(reply.emotion);
         _speakText(native);
         return;
       }
@@ -422,6 +438,7 @@ function setupEventListeners() {
   // Emotion select
   document.getElementById('emotion-select')?.addEventListener('change', (e) => {
     if (behavior) behavior.currentEmotion = e.target.value;
+    if (avatar)   avatar.setEmotion(e.target.value);
   });
 
   // Custom GLB upload

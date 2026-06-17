@@ -592,6 +592,8 @@ async def api_v1_chat(
     return {
         "audio_url": audio_url,
         "animation_matrix": matrix,
+        "emotion": payload.get("emotion", "neutral"),
+        "intent":  payload.get("intent",  "unknown"),
     }
 
 

@@ -29,8 +29,21 @@ export class BehaviorManager {
     this.rotation = { x: 0, y: 0, z: 0 };
     this.position = { x: 0, y: 0, z: 0 };
 
+    // ── Emotion-driven body motion ────────────────────────────────────────
+    // Each emotion defines overrides for breathing speed/amplitude and
+    // a head sway bias so the whole body "feels" different per mood.
+    this._emotionBody = {
+      neutral:   { breathSpeed: 1.8,  breathAmp: 0.022, swayAmp: 0.02,  headBiasY: 0.00 },
+      happy:     { breathSpeed: 2.4,  breathAmp: 0.030, swayAmp: 0.035, headBiasY: 0.04 },
+      sad:       { breathSpeed: 1.2,  breathAmp: 0.015, swayAmp: 0.008, headBiasY: -0.06 },
+      angry:     { breathSpeed: 3.2,  breathAmp: 0.038, swayAmp: 0.012, headBiasY: 0.00 },
+      surprised: { breathSpeed: 2.8,  breathAmp: 0.035, swayAmp: 0.025, headBiasY: 0.05 },
+    };
+    // Current interpolated body params
+    this._bodyParams = { breathSpeed: 1.8, breathAmp: 0.022, swayAmp: 0.02, headBiasY: 0.00 };
+
     // Emotion states
-    this.currentEmotion = 'neutral';
+    this.currentEmotion = 'happy';
     this.emotions = {
       neutral: {},
       happy: {
@@ -82,6 +95,15 @@ export class BehaviorManager {
    * Updates idle procedural state variables. No speech-driven motion.
    */
   update(dt) {
+    // ── Interpolate body params toward current emotion ────────────────────
+    const targetBody = this._emotionBody[this.currentEmotion] || this._emotionBody.neutral;
+    const bodyLerp   = 1 - Math.exp(-2 * dt);  // slow, smooth transition ~0.5s
+    for (const key of Object.keys(this._bodyParams)) {
+      this._bodyParams[key] += (targetBody[key] - this._bodyParams[key]) * bodyLerp;
+    }
+    this.breathingSpeed    = this._bodyParams.breathSpeed;
+    this.breathingAmplitude = this._bodyParams.breathAmp;
+
     // Interpolate active emotion weights
     const targetWeights = this.emotions[this.currentEmotion] || {};
     const emotionSpeed = 5.0;
@@ -96,8 +118,11 @@ export class BehaviorManager {
     this.breathingTime += dt;
     const breathingCycle = Math.sin(this.breathingTime * this.breathingSpeed);
 
+    const swayAmp  = this._bodyParams.swayAmp;
+    const biasY    = this._bodyParams.headBiasY;
+
     const breatheRotX = breathingCycle * this.breathingAmplitude;
-    const breatheRotY = Math.cos(this.breathingTime * this.breathingSpeed * 0.5) * this.breathingAmplitude * 0.3;
+    const breatheRotY = Math.cos(this.breathingTime * this.breathingSpeed * 0.5) * swayAmp * 0.3 + biasY;
     const breatheRotZ = Math.sin(this.breathingTime * this.breathingSpeed * 0.3) * this.breathingAmplitude * 0.15;
     const breathePosY = breathingCycle * this.breathingAmplitude * 0.25;
 
