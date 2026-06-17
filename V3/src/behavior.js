@@ -29,52 +29,64 @@ export class BehaviorManager {
     this.rotation = { x: 0, y: 0, z: 0 };
     this.position = { x: 0, y: 0, z: 0 };
 
-    // Emotion states
-    this.currentEmotion = 'neutral';
+    // Emotion states — match the LLM VALID_EMOTIONS set exactly
+    this.currentEmotion = 'happy';
     this.emotions = {
       neutral: {},
       happy: {
-        mouthSmileLeft: 0.45,
-        mouthSmileRight: 0.45,
-        cheekSquintLeft: 0.25,
+        mouthSmileLeft:   0.45,
+        mouthSmileRight:  0.45,
+        cheekSquintLeft:  0.25,
         cheekSquintRight: 0.25,
-        browOuterUpLeft: 0.20,
-        browOuterUpRight: 0.20
+        browOuterUpLeft:  0.20,
+        browOuterUpRight: 0.20,
       },
       sad: {
-        mouthFrownLeft: 0.55,
+        mouthFrownLeft:  0.55,
         mouthFrownRight: 0.55,
-        browInnerUp: 0.45,
-        browDownLeft: 0.15,
-        browDownRight: 0.15
+        browInnerUp:     0.45,
+        browDownLeft:    0.15,
+        browDownRight:   0.15,
       },
       angry: {
-        browDownLeft: 0.65,
-        browDownRight: 0.65,
-        eyeSquintLeft: 0.35,
-        eyeSquintRight: 0.35,
-        mouthFrownLeft: 0.25,
-        mouthFrownRight: 0.25
+        browDownLeft:    0.65,
+        browDownRight:   0.65,
+        eyeSquintLeft:   0.35,
+        eyeSquintRight:  0.35,
+        mouthFrownLeft:  0.25,
+        mouthFrownRight: 0.25,
+        noseSneerLeft:   0.20,
+        noseSneerRight:  0.20,
       },
       surprised: {
-        eyeWideLeft: 0.5,
-        eyeWideRight: 0.5,
-        browInnerUp: 0.55,
-        browOuterUpLeft: 0.35,
+        eyeWideLeft:      0.55,
+        eyeWideRight:     0.55,
+        browInnerUp:      0.55,
+        browOuterUpLeft:  0.35,
         browOuterUpRight: 0.35,
-        mouthOpen: 0.15
-      }
+        mouthShrugUpper:  0.20,
+      },
+      fearful: {
+        eyeWideLeft:      0.45,
+        eyeWideRight:     0.45,
+        browInnerUp:      0.50,
+        browOuterUpLeft:  0.30,
+        browOuterUpRight: 0.30,
+        mouthFrownLeft:   0.25,
+        mouthFrownRight:  0.25,
+      },
     };
 
     this.emotionWeights = {
-      mouthSmileLeft: 0, mouthSmileRight: 0,
-      cheekSquintLeft: 0, cheekSquintRight: 0,
-      browOuterUpLeft: 0, browOuterUpRight: 0,
-      mouthFrownLeft: 0, mouthFrownRight: 0,
-      browInnerUp: 0, browDownLeft: 0, browDownRight: 0,
-      eyeSquintLeft: 0, eyeSquintRight: 0,
-      eyeWideLeft: 0, eyeWideRight: 0,
-      mouthOpen: 0
+      mouthSmileLeft:   0, mouthSmileRight:  0,
+      cheekSquintLeft:  0, cheekSquintRight: 0,
+      browOuterUpLeft:  0, browOuterUpRight: 0,
+      mouthFrownLeft:   0, mouthFrownRight:  0,
+      browInnerUp:      0, browDownLeft:     0, browDownRight: 0,
+      eyeSquintLeft:    0, eyeSquintRight:   0,
+      eyeWideLeft:      0, eyeWideRight:     0,
+      mouthShrugUpper:  0,
+      noseSneerLeft:    0, noseSneerRight:   0,
     };
   }
 

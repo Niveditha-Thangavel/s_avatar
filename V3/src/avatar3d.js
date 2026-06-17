@@ -113,6 +113,7 @@ export class Avatar3D {
 
     // Reset ALL morph target influences to zero so no shape is frozen
     // on the face after speech ends (prevents puckered-lip resting pose).
+    // The BehaviorManager will smoothly ramp emotion weights back via lerp.
     this.morphMeshes.forEach((mesh) => {
       if (mesh.morphTargetInfluences) {
         for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
