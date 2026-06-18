@@ -125,8 +125,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 // ── Apply emotion to avatar + behavior ───────────────────────────────────────
 function _applyEmotion(emotion) {
   if (!emotion) return;
-  const valid = ['neutral', 'happy', 'sad', 'angry', 'surprised'];
-  const e = valid.includes(emotion) ? emotion : 'neutral';
+  const valid = ['neutral', 'happy', 'sad', 'angry', 'surprised', 'fearful'];
+  const e = valid.includes(emotion) ? emotion : 'happy';
   if (behavior) behavior.currentEmotion = e;
   if (avatar)   avatar.setEmotion(e);
   // Update the dropdown to reflect current emotion

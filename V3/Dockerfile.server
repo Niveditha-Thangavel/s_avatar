@@ -1,70 +1,67 @@
-# Dockerfile.server
-# Pipeline: Faster-Whisper STT → Granite 4.0 LLM → SMaLL-100 Trans → OmniVoice TTS → PantoMatrix
+# Dockerfile.server — Python backend
+# Pipeline: Faster-Whisper STT → Granite 4.0 LLM → SMaLL-100 Trans → OmniVoice TTS
 #
-# Build context: V3/ (project root)
+# Build context must be the project root (V3/) — not server/ subdirectory.
 #
-# ── CPU build (local dev / testing) ───────────────────────────────────────────
+# Local (CPU):
 #   docker build -f Dockerfile.server -t avatar-server .
 #
-# ── GPU build (production) ────────────────────────────────────────────────────
-#   docker build -f Dockerfile.server \
-#     --build-arg BASE_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime \
-#     --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
-#     --build-arg SKIP_TORCH_INSTALL=true \
-#     -t avatar-server-gpu .
+# GPU server:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
 ARG BASE_IMAGE=python:3.11-slim
-FROM ${BASE_IMAGE}
+FROM $BASE_IMAGE
 
+# Default: CPU-only torch. GPU builds override this.
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
-# Set to "true" on GPU builds — conda base image already ships torch
-ARG SKIP_TORCH_INSTALL=false
-# Whisper model ID — can override at build time
-ARG WHISPER_MODEL_ID=Systran/faster-whisper-medium
 
-# WORKDIR=/app so that `from server.xxx import` resolves to /app/server/xxx.py
+# GPU base images (pytorch/pytorch) ship torch via conda — skip pip reinstall.
+ARG SKIP_TORCH_INSTALL=false
+
+# WORKDIR=/app so `from server.xxx import` resolves to /app/server/xxx.py
 WORKDIR /app
 
-# ── System deps ───────────────────────────────────────────────────────────────
-RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc curl perl ffmpeg libsndfile1 \
+# System deps — identical to the working commit
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    curl \
+    perl \
+    ffmpeg \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# ── PyTorch (skipped on GPU conda builds) ─────────────────────────────────────
+# PyTorch (skipped on GPU conda builds)
 RUN if [ "$SKIP_TORCH_INSTALL" != "true" ]; then \
-      pip install --no-cache-dir \
-        torch==2.5.1 torchaudio==2.5.1 \
-        --index-url ${TORCH_INDEX_URL}; \
+      pip install --no-cache-dir torch==2.5.1 torchaudio==2.5.1 \
+        --index-url $TORCH_INDEX_URL; \
     fi
 
-# ── Python deps ───────────────────────────────────────────────────────────────
-COPY server/requirements.txt server/requirements.txt
+# Python deps
+COPY server/requirements.txt server/
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# ── Runtime env vars ──────────────────────────────────────────────────────────
+# Model cache paths — must match runtime engine defaults
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 ENV FASTER_WHISPER_CACHE=/root/.cache/faster_whisper
-ENV WHISPER_MODEL_ID=${WHISPER_MODEL_ID}
-ENV TOKENIZERS_PARALLELISM=false
-ENV PYTHONUNBUFFERED=1
-ENV PIP_ROOT_USER_ACTION=ignore
 
-# ── Pre-download all 4 models at build time ───────────────────────────────────
-# Layer order: requirements → download script → models (cached layer) → source
-# Editing source files (.py) does NOT bust the expensive model-download layer.
-COPY server/__init__.py      server/__init__.py
-COPY server/download_models.py server/download_models.py
+# Pre-download all models at build time
+# Layer order: download script → models (heavy cached layer) → source files
+# Editing .py source does NOT bust the model-download cache layer.
+COPY server/__init__.py      server/
+COPY server/download_models.py server/
 RUN python server/download_models.py
 
-# ── Server source (late copy — keeps model cache layer intact) ────────────────
+# Server source (late copy)
 COPY server/*.py      server/
-COPY server/ref_audio.wav server/ref_audio.wav
-COPY server/ref_text.txt  server/ref_text.txt
+COPY server/ref_audio.wav server/ref_text.txt server/
+
+ENV PYTHONUNBUFFERED=1
+ENV TOKENIZERS_PARALLELISM=false
 
 EXPOSE 8765
 
-# Launch from /app so `from server.xxx import` resolves correctly
-CMD ["python", "-m", "uvicorn", "server.main:app", \
+CMD ["uvicorn", "server.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8765", \
      "--loop", "asyncio", \

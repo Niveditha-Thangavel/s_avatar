@@ -55,7 +55,7 @@ from pydantic import BaseModel
 
 from server.tts_engine         import get_model    as load_tts,     synthesize_stream
 from server.stt_engine         import load_stt_models,              transcribe
-from server.llm_engine         import load_model   as load_llm,     generate_response
+from server.llm_engine         import generate_response
 from server.translation_engine import load_translation_model,       translate_from_english, translate_to_english
 from server.pantomatrix        import extract_blendshapes
 
@@ -97,12 +97,9 @@ class AudioBuffer:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("[Server] Loading: Whisper + SMaLL-100 + OmniVoice + PantoMatrix …")
-    # Sequential loading — asyncio.gather() causes a double-free / MPS allocator
-    # race on macOS when multiple models compete for the MPS memory pool at startup.
+    logger.info("[Server] Loading: Whisper + SMaLL-100 + OmniVoice …")
     await load_tts()
     await load_stt_models()
-    await load_llm()
     await load_translation_model()
     logger.info("[Server] ✅ All models ready")
     yield
@@ -319,8 +316,8 @@ async def ws_stt(websocket: WebSocket):
                     try:
                         payload = await generate_response(english, session_id=session_id, user_emotion=user_emotion)
                     except Exception as exc:
-                        logger.exception("[STT-WS] LLM failed: %s", exc)
-                        await _j(websocket, {"type": "error", "message": f"LLM error: {exc}"})
+                        logger.exception("[STT-WS] Response generation failed: %s", exc)
+                        await _j(websocket, {"type": "error", "message": f"Response error: {exc}"})
                         continue
 
                     eng_response = payload.get("response", "")
@@ -515,7 +512,7 @@ async def api_v1_chat(
       "animation_matrix": [ { "time": 0.00, "blendshapes": { ... } }, ... ]
     }
 
-    Pipeline: audio → Whisper STT → SMaLL-100 (→ EN) → Granite LLM
+    Pipeline: audio → Whisper STT → SMaLL-100 (→ EN) → static response
             → SMaLL-100 (→ native) → OmniVoice TTS → PantoMatrix → JSON
     """
     t_start = time.perf_counter()
@@ -563,11 +560,11 @@ async def api_v1_chat(
     if not english.strip():
         english = original
 
-    # ── 4. Granite LLM with emotion tokens + user emotion context ───────────
+    # ── 4. Static response based on detected emotion ────────────────────────
     try:
         payload = await generate_response(english, session_id=f"api_{uuid.uuid4().hex[:8]}", user_emotion=user_emotion)
     except Exception as exc:
-        raise HTTPException(500, f"LLM failed: {exc}")
+        raise HTTPException(500, f"Response generation failed: {exc}")
 
     eng_response = payload.get("response", "")
     llm_emotion  = payload.get("emotion", "happy")

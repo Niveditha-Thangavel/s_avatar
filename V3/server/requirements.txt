@@ -1,43 +1,34 @@
-# Voice Avatar Server — pinned requirements
-#
-# GPU base image (pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime):
+# Voice Avatar Server — unified requirements
+# Base image (GPU): pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 #   torch 2.5.1 + torchaudio pre-installed via conda → SKIP_TORCH_INSTALL=true
-#
-# CPU base image (python:3.11-slim):
+# Base image (CPU): python:3.11-slim
 #   torch + torchaudio installed explicitly via pip
 
-# ── Web framework ─────────────────────────────────────────────────────────────
 fastapi==0.115.12
 uvicorn[standard]==0.34.3
 pydantic==2.11.4
-
-# ── Audio I/O ─────────────────────────────────────────────────────────────────
 numpy==1.26.4
 soundfile==0.12.1
-scipy>=1.13.0
 
-# ── Model 1: Faster-Whisper (STT + language detection) ───────────────────────
-# CTranslate2 backend — ~4× faster than HuggingFace transformers Whisper.
-# No torchaudio needed for inference; audio arrays are passed directly.
+# ── STT: Faster-Whisper (CTranslate2 backend) ────────────────────────────────
 faster-whisper>=1.0.0
 
-# ── Model 2: Granite 4.0 Nano LLM ────────────────────────────────────────────
-# accelerate is required for device_map= argument in from_pretrained()
-accelerate>=0.30.0
-
-# ── Model 3: SMaLL-100 translation (100+ languages) ──────────────────────────
+# ── Translation: SMaLL-100 (100+ languages) ───────────────────────────────────
 sentencepiece==0.2.0
 huggingface_hub>=0.23.0
 
-# ── Model 4: OmniVoice TTS ────────────────────────────────────────────────────
+# ── TTS: OmniVoice ────────────────────────────────────────────────────────────
 # omnivoice 0.1.5 hard-requires transformers>=5.3.0
 omnivoice==0.1.5
 
-# ── Shared: transformers (SMaLL-100 + OmniVoice + Granite) ───────────────────
+# ── Shared: transformers (SMaLL-100 + OmniVoice) ─────────────────────────────
 transformers>=5.3.0
-# torchaudio is used internally by OmniVoice
+# torchaudio used internally by OmniVoice
 torchaudio>=2.1.0
 
 # ── Romanisation for lipsync ──────────────────────────────────────────────────
 uroman>=1.0.0
 anyascii>=0.3.2
+
+# ── Audio resampling ──────────────────────────────────────────────────────────
+scipy>=1.13.0

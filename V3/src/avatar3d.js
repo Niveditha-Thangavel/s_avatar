@@ -127,8 +127,31 @@ export class Avatar3D {
    * Set the current emotion — no-op, kept for API compatibility.
    * @param {string} emotion
    */
+  /**
+   * Set the current emotion — drives both the idle blendshape pose via
+   * BehaviorManager AND forces an immediate morph update on the mesh so
+   * the expression is visible the instant it's set (not just after the
+   * next render tick).
+   * @param {string} emotion  neutral|happy|sad|angry|surprised|fearful
+   */
   setEmotion(emotion) {
-    // colour changing removed
+    // This is called by _applyEmotion() in main.js.
+    // The actual morph-target drive runs in render() step 5 via
+    // behavior.emotionWeights — but we also force the weights NOW so there's
+    // no 1-frame lag before the expression appears.
+    const emotionMorphs = {
+      neutral:   {},
+      happy:     { mouthSmileLeft: 0.45, mouthSmileRight: 0.45, cheekSquintLeft: 0.25, cheekSquintRight: 0.25, browOuterUpLeft: 0.20, browOuterUpRight: 0.20 },
+      sad:       { mouthFrownLeft: 0.55, mouthFrownRight: 0.55, browInnerUp: 0.45, browDownLeft: 0.15, browDownRight: 0.15 },
+      angry:     { browDownLeft: 0.65, browDownRight: 0.65, eyeSquintLeft: 0.35, eyeSquintRight: 0.35, mouthFrownLeft: 0.25, mouthFrownRight: 0.25, noseSneerLeft: 0.20, noseSneerRight: 0.20 },
+      surprised: { eyeWideLeft: 0.55, eyeWideRight: 0.55, browInnerUp: 0.55, browOuterUpLeft: 0.35, browOuterUpRight: 0.35, mouthShrugUpper: 0.20 },
+      fearful:   { eyeWideLeft: 0.45, eyeWideRight: 0.45, browInnerUp: 0.50, browOuterUpLeft: 0.30, browOuterUpRight: 0.30, mouthFrownLeft: 0.25, mouthFrownRight: 0.25 },
+    };
+    const morphs = emotionMorphs[emotion] || {};
+    // Reset all emotion morphs to 0 first, then apply the new ones
+    const allEmotionShapes = new Set(Object.values(emotionMorphs).flatMap(m => Object.keys(m)));
+    allEmotionShapes.forEach(shape => this.setMorphTarget(shape, 0.0));
+    Object.entries(morphs).forEach(([shape, val]) => this.setMorphTarget(shape, val));
   }
 
   loadGLBModel(url) {
