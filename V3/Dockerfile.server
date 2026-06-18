@@ -1,5 +1,5 @@
 # Dockerfile.server — Python backend
-# STT: Faster-Whisper large-v3 | LLM: Granite 4.0 Nano | Trans: SMaLL-100 | TTS: OmniVoice
+# STT: Faster-Whisper medium | Trans: SMaLL-100 | TTS: OmniVoice
 #
 # Build context: V3/ (project root)
 #
@@ -25,7 +25,7 @@ ARG WHISPER_MODEL_ID=Systran/faster-whisper-medium
 WORKDIR /app
 
 # ── System deps ───────────────────────────────────────────────────────────────
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc curl perl ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -44,6 +44,7 @@ RUN pip install --no-cache-dir -r server/requirements.txt
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 ENV FASTER_WHISPER_CACHE=/root/.cache/faster_whisper
 ENV WHISPER_MODEL_ID=${WHISPER_MODEL_ID}
+ENV PIP_ROOT_USER_ACTION=ignore
 ENV TOKENIZERS_PARALLELISM=false
 ENV PYTHONUNBUFFERED=1
 

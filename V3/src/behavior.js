@@ -29,7 +29,6 @@ export class BehaviorManager {
     this.rotation = { x: 0, y: 0, z: 0 };
     this.position = { x: 0, y: 0, z: 0 };
 
-<<<<<<< HEAD
     // ── Emotion-driven body motion ────────────────────────────────────────
     // Each emotion defines overrides for breathing speed/amplitude and
     // a head sway bias so the whole body "feels" different per mood.
@@ -43,10 +42,7 @@ export class BehaviorManager {
     // Current interpolated body params
     this._bodyParams = { breathSpeed: 1.8, breathAmp: 0.022, swayAmp: 0.02, headBiasY: 0.00 };
 
-    // Emotion states
-=======
-    // Emotion states — match the LLM VALID_EMOTIONS set exactly
->>>>>>> 6fbb4b4 (reverted)
+    // Emotion states — match the hardcoded emotion set exactly
     this.currentEmotion = 'happy';
     this.emotions = {
       neutral: {},

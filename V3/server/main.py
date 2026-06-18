@@ -5,18 +5,19 @@ Pipeline:
   🎤 audio
     → Whisper large-v3-turbo   STT + LID
     → SMaLL-100               translate native → English
-    → Granite 4.0 Nano        LLM: intent, emotion, English response
-    → SMaLL-100               translate English → native (with emotion tokens)
+    → hardcoded emotion response (no LLM)
+    → SMaLL-100               translate English → native
     → OmniVoice               TTS: speak the response
     → PantoMatrix             extract 52 ARKit blendshape frames @30fps
     → JSON payload             { audio_url, animation_matrix }
 
 Endpoints:
   GET   /health                — model readiness status
-  POST  /chat                  — typed text → LLM → { native_text, romanized_text, emotion }
+  POST  /chat                  — typed text → hardcoded response + translation
   WS    /ws/tts                — legacy TTS streaming (text → PCM)
   WS    /ws/stt                — legacy STT pipeline
   POST  /api/v1/chat           — unified: audio → blendshape matrix payload
+  POST  /speak/{emotion}       — forced-emotion TTS → blendshape matrix
   GET   /api/v1/audio/{id}     — serve generated audio bytes
 """
 
@@ -96,7 +97,7 @@ class AudioBuffer:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("[Server] Loading: Whisper + Granite + SMaLL-100 + OmniVoice + PantoMatrix …")
+    logger.info("[Server] Loading: Whisper + SMaLL-100 + OmniVoice + PantoMatrix …")
     # Sequential loading — asyncio.gather() causes a double-free / MPS allocator
     # race on macOS when multiple models compete for the MPS memory pool at startup.
     await load_tts()
@@ -128,14 +129,12 @@ async def serve_audio(audio_id: str):
 async def health():
     from server.tts_engine         import _model          as tts_m
     from server.stt_engine         import _model          as stt_m
-    from server.llm_engine         import _model          as llm_m
     from server.translation_engine import _model          as trans_m
     return {
         "status":    "ok",
         "timestamp": time.time(),
         "omnivoice":  "loaded" if tts_m   else "loading",
         "whisper":    "loaded" if stt_m   else "loading",
-        "granite":    "loaded" if llm_m   else "loading",
         "small100":   "loaded" if trans_m else "loading",
     }
 
