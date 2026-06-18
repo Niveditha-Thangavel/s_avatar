@@ -306,13 +306,7 @@ async function _sendAudioToUnifiedAPI(audioBlob) {
 
     const data = await res.json();
     const { audio_url, animation_matrix, emotion } = data;
-<<<<<<< HEAD
-
-    // Apply emotion to avatar body + suit color
     _applyEmotion(emotion);
-=======
-    if (emotion && behavior) behavior.currentEmotion = emotion;
->>>>>>> 6fbb4b4 (reverted)
 
     updateProgressUI('🔊 Playing response…', true);
 
@@ -363,14 +357,8 @@ function setupEventListeners() {
         const native  = reply.native_text || reply.reply || text;
         const emotion = reply.emotion || 'happy';
         document.getElementById('text-input').value = `🤖 Avatar: ${native}`;
-<<<<<<< HEAD
         _applyEmotion(reply.emotion);
-        _speakText(native);
-=======
-        // Apply idle emotion immediately (will persist during speech)
-        if (behavior) behavior.currentEmotion = emotion;
         _speakText(native, emotion);
->>>>>>> 6fbb4b4 (reverted)
         return;
       }
     } catch (_err) {
