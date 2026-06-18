@@ -32,6 +32,10 @@ export default defineConfig({
         target: 'http://localhost:8765',
         changeOrigin: true,
       },
+      '/speak': {
+        target: 'http://localhost:8765',
+        changeOrigin: true,
+      },
     },
   },
 

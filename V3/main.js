@@ -79,14 +79,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     const ta = document.getElementById('text-input');
     if (ta) ta.value = `🤖 Avatar: ${text}`;
     updateProgressUI('🔊 Generating speech…', true);
-<<<<<<< HEAD
     _applyEmotion(reply?.emotion);
-    _speakText(text);
-=======
-    // Apply emotion to behavior before speaking
-    if (behavior) behavior.currentEmotion = emotion;
     _speakText(text, emotion);
->>>>>>> 6fbb4b4 (reverted)
   };
 
   stt.onStatusChange = (status) => {

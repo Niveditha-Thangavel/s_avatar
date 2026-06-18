@@ -668,6 +668,109 @@ async def api_v1_chat(
     }
 
 
+# ── /speak/{emotion} — TTS with forced emotion ────────────────────────────────
+
+class SpeakRequest(BaseModel):
+    text:  str     = ""
+    lang:  str     = "en"
+    speed: float   = 1.0
+
+
+@app.post("/speak/{emotion}")
+async def speak_with_emotion(emotion: str, req: SpeakRequest, request: Request):
+    """
+    Forced-emotion TTS endpoint.
+
+    Emotion is NOT driven by voice prosody (OmniVoice does not support it).
+    Instead, it is expressed via ARKit blendshapes in the animation matrix
+    using _EMOTION_BLENDSHAPES + _apply_emotion_to_matrix().
+
+    Accepts JSON: { "text": "...", "lang": "en", "speed": 1.0 }
+    Returns:      { "audio_url", "animation_matrix", "emotion" }
+    """
+    t_start = time.perf_counter()
+
+    if not req.text.strip():
+        raise HTTPException(400, "Empty text")
+
+    emotion = emotion.lower()
+    if emotion not in _EMOTION_BLENDSHAPES:
+        raise HTTPException(422, f"Invalid emotion. Valid: {list(_EMOTION_BLENDSHAPES.keys())}")
+
+    # ── 1. Translate to target language if needed ────────────────────────────
+    tts_input = req.text.strip()
+    if req.lang != "en":
+        try:
+            translated, _ = await translate_from_english(tts_input, req.lang)
+            tts_input = translated or tts_input
+        except Exception as exc:
+            logger.warning("[Speak] Translation to %s failed: %s", req.lang, exc)
+
+    # ── 2. Sanitize for OmniVoice (strip whitespace around bracketed tokens) ─
+    tts_input = _sanitize_for_omni(tts_input)
+
+    # ── 3. OmniVoice TTS → audio bytes ───────────────────────────────────────
+    tts_chunks = []
+    try:
+        async for chunk in synthesize_stream(text=tts_input, speed=req.speed):
+            tts_chunks.append(chunk["audio"])
+    except Exception as exc:
+        raise HTTPException(500, f"TTS failed: {exc}")
+
+    if not tts_chunks:
+        raise HTTPException(500, "TTS produced no audio")
+
+    tts_sr = 24000
+    audio_f32 = np.frombuffer(b"".join(tts_chunks), dtype=np.float32)
+
+    # ── 4. Write WAV to bytes ───────────────────────────────────────────────
+    wav_buf = io.BytesIO()
+    sf.write(wav_buf, audio_f32, tts_sr, format="WAV", subtype="FLOAT")
+    wav_bytes = wav_buf.getvalue()
+
+    audio_id = uuid.uuid4().hex
+    _audio_store[audio_id] = wav_bytes
+
+    scheme = request.url.scheme
+    host = request.url.hostname
+    port = request.url.port
+    if port and port not in (80, 443):
+        audio_url = f"{scheme}://{host}:{port}{_AUDIO_BASE_URL}/{audio_id}"
+    else:
+        audio_url = f"{scheme}://{host}{_AUDIO_BASE_URL}/{audio_id}"
+
+    logger.info("[Speak/%s] %.2fs audio → %s", emotion, len(audio_f32) / tts_sr, audio_id)
+
+    # ── 5. PantoMatrix blendshapes (in thread) ───────────────────────────────
+    loop = asyncio.get_event_loop()
+    try:
+        matrix = await loop.run_in_executor(
+            None, extract_blendshapes, audio_f32.tobytes(), tts_sr
+        )
+    except Exception as exc:
+        logger.error("[Speak] PantoMatrix failed: %s", exc)
+        matrix = []
+
+    # ── 6. Apply emotion blendshapes to every frame ──────────────────────────
+    _, inline_tokens = _parse_emotion_tokens(tts_input)
+    matrix = _apply_emotion_to_matrix(matrix, emotion, inline_tokens)
+
+    # ── 7. Cleanup old audio entries ─────────────────────────────────────────
+    if len(_audio_store) > 100:
+        oldest = sorted(_audio_store.keys())[:50]
+        for k in oldest:
+            _audio_store.pop(k, None)
+
+    t_total = time.perf_counter() - t_start
+    logger.info("[Speak/%s] ✅ Done in %.2fs (frames=%d)", emotion, t_total, len(matrix))
+
+    return {
+        "audio_url": audio_url,
+        "animation_matrix": matrix,
+        "emotion": emotion,
+    }
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _j(ws: WebSocket, data: dict):
