@@ -31,14 +31,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ── PyTorch ───────────────────────────────────────────────────────────────────
 RUN if [ "$SKIP_TORCH_INSTALL" != "true" ]; then \
-      pip install \
+      pip install --no-cache-dir \
         torch==2.5.1 torchaudio==2.5.1 \
         --index-url ${TORCH_INDEX_URL}; \
     fi
 
 # ── Python deps ───────────────────────────────────────────────────────────────
 COPY server/requirements.txt server/requirements.txt
-RUN pip install -r server/requirements.txt
+RUN pip install --no-cache-dir -r server/requirements.txt
 
 # ── Cache paths ───────────────────────────────────────────────────────────────
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
