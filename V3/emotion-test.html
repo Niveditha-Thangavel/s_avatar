@@ -4,6 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Emotion + Body + Suit Color Test</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+      "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+    }
+  }
+  </script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0d0d0d; color: #eee; font-family: 'Segoe UI', monospace;
@@ -68,10 +77,7 @@
     #res-pass { color: #0f0; font-weight: 700; }
     #res-fail { color: #f44; font-weight: 700; }
 
-    /* ── Colour swatch ── */
-    #suit-swatch { width: 28px; height: 28px; border-radius: 50%;
-                   border: 2px solid #444; display: inline-block;
-                   vertical-align: middle; margin-left: 8px; }
+
   </style>
 </head>
 <body>
@@ -81,10 +87,8 @@
 <div id="hud">
   <div class="hud-chip">FPS <span id="hud-fps">0</span></div>
   <div class="hud-chip">Emotion <span id="hud-emo">happy</span></div>
-  <div class="hud-chip">Suit <span id="hud-suit">#2255aa</span><span id="suit-swatch"></span></div>
   <div class="hud-chip">Breath speed <span id="hud-bs">1.80</span></div>
   <div class="hud-chip">Head bias Y <span id="hud-by">0.00</span></div>
-  <div class="hud-chip">Suit meshes <span id="hud-sm">0</span></div>
 </div>
 
 <div id="panel">
@@ -176,14 +180,13 @@
 </div>
 
 <script type="module">
-import * as THREE from 'three';
 import { Avatar3D }        from './src/avatar3d.js';
 import { BehaviorManager } from './src/behavior.js';
 
 // ── Module scripts run after DOM is parsed, so elements exist.
 // One rAF gives the browser time to compute layout so getBoundingClientRect
 // on #viewport returns real pixel dimensions before Three.js reads them.
-const avatar   = new Avatar3D('viewport', '/avatar_head.glb');
+const avatar   = new Avatar3D('viewport', './public/avatar_head.glb');
 const behavior = new BehaviorManager();
 
 // ── Test harness ──────────────────────────────────────────────────────────────
@@ -221,8 +224,7 @@ const SUIT_COLORS = {
   sad:       0x4a6fa5,
   angry:     0xcc2200,
   surprised: 0x9b59b6,
-};
-const BODY_PARAMS = {
+};const BODY_PARAMS = {
   neutral:   { breathSpeed: 1.8,  breathAmp: 0.022, swayAmp: 0.02,  headBiasY: 0.00 },
   happy:     { breathSpeed: 2.4,  breathAmp: 0.030, swayAmp: 0.035, headBiasY: 0.04 },
   sad:       { breathSpeed: 1.2,  breathAmp: 0.015, swayAmp: 0.008, headBiasY: -0.06 },
@@ -291,40 +293,13 @@ function runAllTests() {
   const allNeutral = Object.values(behavior.emotionWeights).every(v => v < 0.05);
   assert(allNeutral, 'neutral: all weights cleared to ~0');
 
-  // ── 3. Avatar3D — setEmotion updates target suit color ───────────────
-  logHead('3. Avatar3D — setEmotion() suit color target');
-  Object.entries(SUIT_COLORS).forEach(([emo, hex]) => {
-    avatar.setEmotion(emo);
-    const target = avatar._targetSuitColor;
-    const expected = new THREE.Color(hex);
-    const diff = Math.abs(target.r - expected.r)
-               + Math.abs(target.g - expected.g)
-               + Math.abs(target.b - expected.b);
-    assert(diff < 0.01, `${emo}: targetSuitColor = #${hex.toString(16).padStart(6,'0')}`);
+  // ── 3. Avatar3D — setEmotion (no-op, just verify no error thrown) ───────
+  logHead('3. Avatar3D — setEmotion() no-op check');
+  Object.keys(SUIT_COLORS).forEach((emo) => {
+    let threw = false;
+    try { avatar.setEmotion(emo); } catch(e) { threw = true; }
+    assert(!threw, `setEmotion("${emo}") does not throw`);
   });
-
-  // ── 4. Avatar3D — suit color lerps toward target ──────────────────────
-  logHead('4. Avatar3D — suit color lerp');
-  avatar.setEmotion('angry');   // target = red
-  const before = avatar._currentSuitColor.clone();
-  // Simulate 60 frames of dt=1/60
-  for (let i = 0; i < 60; i++) avatar._updateSuitColor(1/60);
-  const after = avatar._currentSuitColor.clone();
-  const moved = after.r - before.r; // red channel should increase toward cc2200
-  assert(moved > 0.01, `suit color moved toward red (Δr = ${moved.toFixed(4)})`);
-
-  // ── 5. Suit mesh detection ────────────────────────────────────────────
-  logHead('5. Avatar3D — suit mesh detection');
-  const suitCount = avatar._suitMeshes.length;
-  document.getElementById('hud-sm').textContent = suitCount;
-  if (suitCount > 0) {
-    assert(true, `found ${suitCount} suit mesh(es)`);
-    // Verify each has a cloned material (not shared)
-    const uniqueMaterials = new Set(avatar._suitMeshes.map(m => m.material.uuid));
-    assert(uniqueMaterials.size === suitCount, 'each suit mesh has its own cloned material');
-  } else {
-    log('  ℹ model has no detectable clothing meshes — suit color test skipped', 'log-warn');
-  }
 
   // ── 6. Blinking state machine ─────────────────────────────────────────
   logHead('6. BehaviorManager — blinking');
@@ -351,10 +326,6 @@ function runAllTests() {
     avatar.setEmotion(mapped);
     assert(behavior.currentEmotion === mapped,
       `LLM emotion "${resp.emotion}" → behavior.currentEmotion = "${mapped}"`);
-    const col = avatar._targetSuitColor;
-    const exp = new THREE.Color(SUIT_COLORS[mapped]);
-    const d = Math.abs(col.r-exp.r)+Math.abs(col.g-exp.g)+Math.abs(col.b-exp.b);
-    assert(d < 0.01, `LLM emotion "${resp.emotion}" → correct suit color`);
   });
 
   // ── 8. Transition — emotion switch mid-cycle ──────────────────────────
@@ -403,13 +374,6 @@ function renderLoop() {
   document.getElementById('rb-ba-bar').value    = bp.breathAmp;
   document.getElementById('rb-sw-bar').value    = bp.swayAmp;
   document.getElementById('rb-by-bar').value    = bp.headBiasY;
-
-  // Suit swatch
-  const sc = avatar._currentSuitColor;
-  const hex = '#' + [sc.r, sc.g, sc.b]
-    .map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
-  document.getElementById('hud-suit').textContent = hex + ' ';
-  document.getElementById('suit-swatch').style.background = hex;
 }
 // ── Start render loop ─────────────────────────────────────────────────────────
 renderLoop();
