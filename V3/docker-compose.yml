@@ -1,24 +1,32 @@
+# docker-compose.yml — CPU / local dev default
+#
+# For GPU production deployment use:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+
 services:
   server:
     build:
       context: .
       dockerfile: Dockerfile.server
       args:
-        BASE_IMAGE: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
-        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
-        SKIP_TORCH_INSTALL: "true"
+        # CPU build by default — no NVIDIA required
+        BASE_IMAGE: python:3.11-slim
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+        SKIP_TORCH_INSTALL: "false"
         WHISPER_MODEL_ID: Systran/faster-whisper-medium
+    image: avatar-server
     container_name: avatar-server
     ports:
       - "8765:8765"
     environment:
-      - OMNIVOICE_DEVICE=cuda:0
-      - WHISPER_MODEL_ID=Systran/faster-whisper-medium
+      - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
-      - TORCH_ALLOW_TF32=1
-      - CUDNN_BENCHMARK=1
-      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - FASTER_WHISPER_CACHE=/root/.cache/faster_whisper
+      - WHISPER_MODEL_ID=Systran/faster-whisper-medium
+      - OMNIVOICE_DEVICE=cpu
     volumes:
+      # Named volumes persist model weights across container recreates
       - huggingface_cache:/root/.cache/huggingface
       - faster_whisper_cache:/root/.cache/faster_whisper
     restart: unless-stopped
@@ -27,19 +35,13 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      start_period: 180s   # models take ~2 min to load from disk on first start
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+    image: avatar-frontend
     container_name: avatar-frontend
     ports:
       - "3005:80"

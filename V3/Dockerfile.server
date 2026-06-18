@@ -1,9 +1,9 @@
-# Dockerfile.server — Python backend
-# STT: Faster-Whisper medium | Trans: SMaLL-100 | TTS: OmniVoice
+# Dockerfile.server
+# Pipeline: Faster-Whisper STT → Granite 4.0 LLM → SMaLL-100 Trans → OmniVoice TTS → PantoMatrix
 #
 # Build context: V3/ (project root)
 #
-# ── CPU build (local dev) ──────────────────────────────────────────────────────
+# ── CPU build (local dev / testing) ───────────────────────────────────────────
 #   docker build -f Dockerfile.server -t avatar-server .
 #
 # ── GPU build (production) ────────────────────────────────────────────────────
@@ -17,11 +17,12 @@ ARG BASE_IMAGE=python:3.11-slim
 FROM ${BASE_IMAGE}
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+# Set to "true" on GPU builds — conda base image already ships torch
 ARG SKIP_TORCH_INSTALL=false
+# Whisper model ID — can override at build time
 ARG WHISPER_MODEL_ID=Systran/faster-whisper-medium
 
-# WORKDIR is /app — server/ lives as a sub-package at /app/server/
-# This makes `from server.tts_engine import ...` resolve correctly.
+# WORKDIR=/app so that `from server.xxx import` resolves to /app/server/xxx.py
 WORKDIR /app
 
 # ── System deps ───────────────────────────────────────────────────────────────
@@ -29,7 +30,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-ins
     build-essential gcc curl perl ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# ── PyTorch ───────────────────────────────────────────────────────────────────
+# ── PyTorch (skipped on GPU conda builds) ─────────────────────────────────────
 RUN if [ "$SKIP_TORCH_INSTALL" != "true" ]; then \
       pip install --no-cache-dir \
         torch==2.5.1 torchaudio==2.5.1 \
@@ -40,29 +41,29 @@ RUN if [ "$SKIP_TORCH_INSTALL" != "true" ]; then \
 COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# ── Cache paths ───────────────────────────────────────────────────────────────
+# ── Runtime env vars ──────────────────────────────────────────────────────────
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
 ENV FASTER_WHISPER_CACHE=/root/.cache/faster_whisper
 ENV WHISPER_MODEL_ID=${WHISPER_MODEL_ID}
-ENV PIP_ROOT_USER_ACTION=ignore
 ENV TOKENIZERS_PARALLELISM=false
 ENV PYTHONUNBUFFERED=1
+ENV PIP_ROOT_USER_ACTION=ignore
 
-# ── Pre-download all models at build time ─────────────────────────────────────
-# Copy download script into server/ package, run from /app so imports work
+# ── Pre-download all 4 models at build time ───────────────────────────────────
+# Layer order: requirements → download script → models (cached layer) → source
+# Editing source files (.py) does NOT bust the expensive model-download layer.
+COPY server/__init__.py      server/__init__.py
 COPY server/download_models.py server/download_models.py
-COPY server/__init__.py server/__init__.py
-RUN python -c "from server.download_models import *" 2>/dev/null || python server/download_models.py
+RUN python server/download_models.py
 
-# ── Server source (late COPY — keeps model cache layer intact) ────────────────
-COPY server/*.py server/
+# ── Server source (late copy — keeps model cache layer intact) ────────────────
+COPY server/*.py      server/
 COPY server/ref_audio.wav server/ref_audio.wav
 COPY server/ref_text.txt  server/ref_text.txt
 
 EXPOSE 8765
 
-# Run as `server.main:app` from WORKDIR=/app so all `from server.xxx import`
-# statements resolve correctly against the /app/server/ package.
+# Launch from /app so `from server.xxx import` resolves correctly
 CMD ["python", "-m", "uvicorn", "server.main:app", \
      "--host", "0.0.0.0", \
      "--port", "8765", \
