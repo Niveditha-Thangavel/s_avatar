@@ -18,7 +18,7 @@ FROM ${BASE_IMAGE}
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 ARG SKIP_TORCH_INSTALL=false
-ARG WHISPER_MODEL_ID=Systran/faster-whisper-large-v3
+ARG WHISPER_MODEL_ID=Systran/faster-whisper-medium
 
 # WORKDIR is /app — server/ lives as a sub-package at /app/server/
 # This makes `from server.tts_engine import ...` resolve correctly.

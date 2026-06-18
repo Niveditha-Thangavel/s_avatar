@@ -1,7 +1,7 @@
 """
 stt_engine.py — Faster-Whisper large-v3 STT  (CTranslate2 backend)
 
-Model: Systran/faster-whisper-large-v3
+Model: Systran/faster-whisper-medium
   • CTranslate2 backend — ~4× faster than vanilla HuggingFace transformers
   • 99-language auto-detection via model.transcribe(language=None)
   • int8 compute for CPU/Mac, float16 for CUDA
@@ -25,7 +25,7 @@ logger      = logging.getLogger(__name__)
 SAMPLE_RATE = 16_000   # faster-whisper expects 16 kHz mono float32
 
 WHISPER_MODEL_ID = os.environ.get(
-    "WHISPER_MODEL_ID", "Systran/faster-whisper-large-v3"
+    "WHISPER_MODEL_ID", "Systran/faster-whisper-medium"
 )
 # faster-whisper caches converted CTranslate2 models to ~/.cache/faster_whisper/
 WHISPER_CACHE = os.environ.get(

@@ -5,7 +5,7 @@ Runs on CPU only (build containers have no GPU).
 Cache paths match the runtime engine defaults exactly.
 
 Models downloaded:
-  1. Faster-Whisper large-v3  (Systran/faster-whisper-large-v3)  ~1.6 GB
+   1. Faster-Whisper medium   (Systran/faster-whisper-medium)   ~0.7 GB
   2. Granite 4.0 Nano         (ibm-granite/granite-4.0-1b)      ~2.5 GB
   3. SMaLL-100                (alirezamsh/small100)              ~1.2 GB
   4. OmniVoice                (k2-fsa/OmniVoice)                ~1.8 GB
@@ -22,7 +22,7 @@ HF_CACHE = os.environ.get(
     "TRANSFORMERS_CACHE",
     os.path.join(os.path.expanduser("~"), ".cache", "huggingface"),
 )
-WHISPER_MODEL_ID = os.environ.get("WHISPER_MODEL_ID", "Systran/faster-whisper-large-v3")
+WHISPER_MODEL_ID = os.environ.get("WHISPER_MODEL_ID", "Systran/faster-whisper-medium")
 FW_CACHE = os.environ.get(
     "FASTER_WHISPER_CACHE",
     os.path.join(os.path.expanduser("~"), ".cache", "faster_whisper"),
@@ -36,7 +36,7 @@ import torch  # noqa: E402 — after env setup
 
 
 # ── 1. Faster-Whisper large-v3 ─────────────────────────────────────────────────
-log.info("[1/4] Faster-Whisper large-v3 (%s) …", WHISPER_MODEL_ID)
+log.info("[1/4] Faster-Whisper medium (%s) …", WHISPER_MODEL_ID)
 try:
     from faster_whisper import WhisperModel
 

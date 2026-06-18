@@ -3,17 +3,22 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
+      args:
+        BASE_IMAGE: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+        SKIP_TORCH_INSTALL: "true"
+        WHISPER_MODEL_ID: Systran/faster-whisper-medium
     container_name: avatar-server
     ports:
       - "8765:8765"
     environment:
-      - PYTHONUNBUFFERED=1
+      - OMNIVOICE_DEVICE=cuda:0
+      - WHISPER_MODEL_ID=Systran/faster-whisper-medium
       - TOKENIZERS_PARALLELISM=false
-      - TRANSFORMERS_CACHE=/root/.cache/huggingface
-      - WHISPER_MODEL_ID=Systran/faster-whisper-large-v3
-      - OMNIVOICE_DEVICE=cpu
+      - TORCH_ALLOW_TF32=1
+      - CUDNN_BENCHMARK=1
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     volumes:
-      # Persist model cache across rebuilds — avoids re-downloading ~7 GB
       - huggingface_cache:/root/.cache/huggingface
       - faster_whisper_cache:/root/.cache/faster_whisper
     restart: unless-stopped
@@ -23,6 +28,13 @@ services:
       timeout: 10s
       retries: 5
       start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   frontend:
     build:
