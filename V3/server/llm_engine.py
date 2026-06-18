@@ -51,7 +51,10 @@ async def load_model():
 
         from transformers import AutoModelForCausalLM, AutoTokenizer
         device = _get_device()
-        dtype  = torch.bfloat16 if device == "cuda" else torch.float32
+        if device == "cuda":
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            dtype = torch.float32
 
         logger.info("[LLM] Loading Granite '%s' on %s (%s)…", MODEL_ID, device, dtype)
         _tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
@@ -169,8 +172,9 @@ async def generate_response(
         )
         ids = tokenizer(prompt, return_tensors="pt").to(model.device)
 
+        amp_dtype = torch.bfloat16 if (device == "cuda" and torch.cuda.is_bf16_supported()) else torch.float16
         ctx = (
-            torch.cuda.amp.autocast(dtype=torch.bfloat16)
+            torch.cuda.amp.autocast(dtype=amp_dtype)
             if device == "cuda" else _null_ctx()
         )
         with torch.no_grad(), ctx:

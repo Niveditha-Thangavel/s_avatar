@@ -10,11 +10,12 @@ services:
       - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
-      - WHISPER_MODEL_ID=openai/whisper-large-v3-turbo
+      - WHISPER_MODEL_ID=Systran/faster-whisper-large-v3
       - OMNIVOICE_DEVICE=cpu
     volumes:
       # Persist model cache across rebuilds — avoids re-downloading ~7 GB
       - huggingface_cache:/root/.cache/huggingface
+      - faster_whisper_cache:/root/.cache/faster_whisper
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
@@ -37,3 +38,4 @@ services:
 
 volumes:
   huggingface_cache:
+  faster_whisper_cache:

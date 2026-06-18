@@ -14,10 +14,10 @@ services:
         BASE_IMAGE: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
         TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
         SKIP_TORCH_INSTALL: "true"
-        WHISPER_MODEL_ID: openai/whisper-large-v3-turbo
+        WHISPER_MODEL_ID: Systran/faster-whisper-large-v3
     environment:
       - OMNIVOICE_DEVICE=cuda:0
-      - WHISPER_MODEL_ID=openai/whisper-large-v3-turbo
+      - WHISPER_MODEL_ID=Systran/faster-whisper-large-v3
       - TOKENIZERS_PARALLELISM=false
       - TORCH_ALLOW_TF32=1
       - CUDNN_BENCHMARK=1

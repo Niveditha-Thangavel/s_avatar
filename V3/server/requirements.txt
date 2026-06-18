@@ -10,11 +10,10 @@ pydantic==2.11.4
 numpy==1.26.4
 soundfile==0.12.1
 
-# ── Model 1: Whisper large-v3-turbo (STT + language detection) ───────────────
-# transformers pipeline wraps the HuggingFace Whisper implementation.
-# accelerate is required for device_map and low_cpu_mem_usage.
-# torchaudio needed for audio feature extraction inside the pipeline.
-torchaudio>=2.1.0
+# ── Model 1: Faster-Whisper large-v3 (STT + language detection) ──────────────
+# CTranslate2 backend — ~4× faster than vanilla HuggingFace transformers.
+# Audio I/O is handled internally; no torchaudio needed.
+faster-whisper>=1.0.0
 
 # ── Model 2 (utility): SMaLL-100 (translation, 100+ languages) ───────────────
 sentencepiece==0.2.0

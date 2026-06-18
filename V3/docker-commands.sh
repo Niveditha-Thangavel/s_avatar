@@ -32,7 +32,7 @@ build-gpu() {
     --build-arg BASE_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime \
     --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
     --build-arg SKIP_TORCH_INSTALL=true \
-    --build-arg WHISPER_MODEL_ID=openai/whisper-large-v3-turbo \
+    --build-arg WHISPER_MODEL_ID=Systran/faster-whisper-large-v3 \
     -t avatar-server-gpu \
     .
   echo "=== Building frontend image ==="

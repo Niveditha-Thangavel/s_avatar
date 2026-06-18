@@ -5,10 +5,10 @@ Runs on CPU only (build containers have no GPU).
 Cache paths match the runtime engine defaults exactly.
 
 Models downloaded:
-  1. Whisper large-v3-turbo  (openai/whisper-large-v3-turbo)  ~1.6 GB
-  2. Granite 4.0 Nano        (ibm-granite/granite-4.0-1b)     ~2.5 GB
-  3. SMaLL-100               (alirezamsh/small100)             ~1.2 GB
-  4. OmniVoice               (k2-fsa/OmniVoice)               ~1.8 GB
+  1. Faster-Whisper large-v3  (Systran/faster-whisper-large-v3)  ~1.6 GB
+  2. Granite 4.0 Nano         (ibm-granite/granite-4.0-1b)      ~2.5 GB
+  3. SMaLL-100                (alirezamsh/small100)              ~1.2 GB
+  4. OmniVoice                (k2-fsa/OmniVoice)                ~1.8 GB
 """
 
 import importlib.util
@@ -22,46 +22,42 @@ HF_CACHE = os.environ.get(
     "TRANSFORMERS_CACHE",
     os.path.join(os.path.expanduser("~"), ".cache", "huggingface"),
 )
-WHISPER_MODEL_ID = os.environ.get("WHISPER_MODEL_ID", "openai/whisper-large-v3-turbo")
+WHISPER_MODEL_ID = os.environ.get("WHISPER_MODEL_ID", "Systran/faster-whisper-large-v3")
+FW_CACHE = os.environ.get(
+    "FASTER_WHISPER_CACHE",
+    os.path.join(os.path.expanduser("~"), ".cache", "faster_whisper"),
+)
 
 os.makedirs(HF_CACHE, exist_ok=True)
+os.makedirs(FW_CACHE, exist_ok=True)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch  # noqa: E402 — after env setup
 
 
-# ── 1. Whisper large-v3-turbo ─────────────────────────────────────────────────
-log.info("[1/4] Whisper large-v3-turbo (%s) …", WHISPER_MODEL_ID)
+# ── 1. Faster-Whisper large-v3 ─────────────────────────────────────────────────
+log.info("[1/4] Faster-Whisper large-v3 (%s) …", WHISPER_MODEL_ID)
 try:
-    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+    from faster_whisper import WhisperModel
 
-    processor = AutoProcessor.from_pretrained(WHISPER_MODEL_ID, cache_dir=HF_CACHE)
-    model     = AutoModelForSpeechSeq2Seq.from_pretrained(
+    model = WhisperModel(
         WHISPER_MODEL_ID,
-        torch_dtype=torch.float32,
-        low_cpu_mem_usage=True,
-        use_safetensors=True,
-        cache_dir=HF_CACHE,
+        device="cpu",
+        compute_type="int8",
+        download_root=FW_CACHE,
+        cpu_threads=2,
+        num_workers=1,
     )
 
     # Quick sanity: 1 second of silence → should produce empty/near-empty transcript
     import numpy as np
-    from transformers import pipeline as hf_pipeline
-
-    pipe = hf_pipeline(
-        "automatic-speech-recognition",
-        model=model,
-        tokenizer=processor.tokenizer,
-        feature_extractor=processor.feature_extractor,
-        torch_dtype=torch.float32,
-        device="cpu",
-    )
     silence = np.zeros(16000, dtype=np.float32)
-    result  = pipe(silence, generate_kwargs={"language": "en", "task": "transcribe"})
-    log.info("[1/4] ✅ Whisper large-v3-turbo — sanity output: %r", result.get("text", "")[:60])
-    del model, pipe  # free RAM for subsequent downloads
+    segments, info = model.transcribe(silence, language="en", beam_size=1)
+    text = " ".join(s.text for s in segments)
+    log.info("[1/4] ✅ Faster-Whisper — sanity output: %r", text[:60])
+    del model  # free RAM for subsequent downloads
 except Exception as exc:
-    log.error("[1/4] ❌ Whisper: %s", exc)
+    log.error("[1/4] ❌ Faster-Whisper: %s", exc)
 
 
 # ── 2. Granite 4.0 Nano ───────────────────────────────────────────────────────

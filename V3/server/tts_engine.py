@@ -27,7 +27,6 @@ import torch
 warnings.filterwarnings("ignore", message=".*clean_up_tokenization.*")
 warnings.filterwarnings("ignore", message=".*forced_decoder_ids.*")
 warnings.filterwarnings("ignore", message=".*SuppressTokens.*")
-warnings.filterwarnings("ignore", message=".*multilingual Whisper.*")
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,9 @@ _model_lock = asyncio.Lock()
 
 # Single-thread executor for TTS — serialises GPU work, avoids CUDA ctx races
 _executor   = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
+
+# Device cached at load time — used by _run_generate for autocast
+_device_cache: Optional[str] = None
 
 
 def _best_device() -> str:
@@ -63,7 +65,7 @@ def _best_dtype(device: str) -> torch.dtype:
 
 
 async def get_model():
-    global _model
+    global _model, _device_cache
     if _model is not None:
         return _model
     async with _model_lock:
@@ -89,6 +91,7 @@ async def get_model():
                 logger.warning("[TTS] torch.compile skipped: %s", e)
 
         _model = m
+        _device_cache = device
         elapsed = time.perf_counter() - t0
         logger.info("[TTS] ✅ OmniVoice ready in %.2fs on %s", elapsed, device)
         return _model
@@ -140,10 +143,7 @@ async def synthesize_stream(
 
 def _run_generate(model, text, ref_audio, ref_text, instruct, speed, num_step):
     """Runs in the dedicated TTS thread. Uses autocast on CUDA for speed."""
-    is_cuda = torch.cuda.is_available() and str(next(
-        (p for p in getattr(model, 'parameters', lambda: iter([]))()),
-        torch.tensor(0)
-    ).device).startswith("cuda")
+    is_cuda = _device_cache is not None and _device_cache.startswith("cuda")
 
     strategies = []
     if ref_audio:

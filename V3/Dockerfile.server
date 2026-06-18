@@ -1,5 +1,5 @@
 # Dockerfile.server — Python backend
-# STT: Whisper large-v3-turbo | LLM: Granite 4.0 Nano | Trans: SMaLL-100 | TTS: OmniVoice
+# STT: Faster-Whisper large-v3 | LLM: Granite 4.0 Nano | Trans: SMaLL-100 | TTS: OmniVoice
 #
 # Build context: V3/ (project root)
 #
@@ -18,7 +18,7 @@ FROM ${BASE_IMAGE}
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 ARG SKIP_TORCH_INSTALL=false
-ARG WHISPER_MODEL_ID=openai/whisper-large-v3-turbo
+ARG WHISPER_MODEL_ID=Systran/faster-whisper-large-v3
 
 # WORKDIR is /app — server/ lives as a sub-package at /app/server/
 # This makes `from server.tts_engine import ...` resolve correctly.
@@ -42,6 +42,7 @@ RUN pip install --no-cache-dir -r server/requirements.txt
 
 # ── Cache paths ───────────────────────────────────────────────────────────────
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
+ENV FASTER_WHISPER_CACHE=/root/.cache/faster_whisper
 ENV WHISPER_MODEL_ID=${WHISPER_MODEL_ID}
 ENV TOKENIZERS_PARALLELISM=false
 ENV PYTHONUNBUFFERED=1

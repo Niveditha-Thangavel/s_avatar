@@ -31,12 +31,15 @@ sleep 1
 DEVICE=$(python -c "
 import torch
 if torch.cuda.is_available():
-    print('cuda:' + torch.cuda.get_device_name(0))
+    name = torch.cuda.get_device_name(0)
+    cc = torch.cuda.get_device_capability(0)
+    mem = torch.cuda.get_device_properties(0).total_mem
+    print(f'cuda:{name}  (CC {cc[0]}.{cc[1]}, {mem/1e9:.1f} GB)')
 elif torch.backends.mps.is_available():
     print('mps')
 else:
     print('cpu')
-" 2>/dev/null)
+" 2>/dev/null || echo "cpu")
 echo "[start_server] Device: $DEVICE"
 
 # ── Environment flags ─────────────────────────────────────────────────────────
@@ -53,7 +56,8 @@ elif [[ "$DEVICE" == cuda* ]]; then
     export TORCH_ALLOW_TF32=1
     export CUDNN_BENCHMARK=1
     # Cap single-allocation size to prevent fragmentation
-    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+    # expandable_segments:True reduces memory waste in PyTorch 2.x+
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512,expandable_segments:True
 fi
 
 echo "[start_server] Python: $(python --version)"
