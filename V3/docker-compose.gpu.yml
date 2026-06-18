@@ -1,11 +1,11 @@
-# docker-compose.gpu.yml — GPU override for production server
+# docker-compose.gpu.yml — GPU production override
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
-# Requirements on the host:
-#   - nvidia-container-toolkit installed and configured
-#   - NVIDIA drivers (525+) with CUDA 12.4 support
+# Requirements:
+#   - nvidia-container-toolkit installed
+#   - NVIDIA driver 525+ with CUDA 12.4
 
 services:
   server:
@@ -14,16 +14,13 @@ services:
         BASE_IMAGE: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
         TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
         SKIP_TORCH_INSTALL: "true"
+        WHISPER_MODEL_ID: openai/whisper-large-v3-turbo
     environment:
-      # Force all models onto GPU 0
       - OMNIVOICE_DEVICE=cuda:0
-      # TF32 free speedup on Ampere+ (A100, RTX 30xx/40xx)
-      - TORCH_ALLOW_TF32=1
-      # Disable tokenizer parallelism (we use our own thread pools)
+      - WHISPER_MODEL_ID=openai/whisper-large-v3-turbo
       - TOKENIZERS_PARALLELISM=false
-      # cuDNN autotuner — finds fastest conv algorithm on first run
+      - TORCH_ALLOW_TF32=1
       - CUDNN_BENCHMARK=1
-      # Prevent OOM on models that don't pin memory
       - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     deploy:
       resources:

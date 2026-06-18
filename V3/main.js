@@ -73,13 +73,20 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   stt.onReply = async (reply) => {
     console.log('[STT] Reply:', reply);
-    const text = reply?.native_text || reply?.reply || (typeof reply === 'string' ? reply : '');
+    const text    = reply?.native_text || reply?.reply || (typeof reply === 'string' ? reply : '');
+    const emotion = reply?.emotion || 'happy';
 
     const ta = document.getElementById('text-input');
     if (ta) ta.value = `🤖 Avatar: ${text}`;
     updateProgressUI('🔊 Generating speech…', true);
+<<<<<<< HEAD
     _applyEmotion(reply?.emotion);
     _speakText(text);
+=======
+    // Apply emotion to behavior before speaking
+    if (behavior) behavior.currentEmotion = emotion;
+    _speakText(text, emotion);
+>>>>>>> 6fbb4b4 (reverted)
   };
 
   stt.onStatusChange = (status) => {
@@ -134,10 +141,10 @@ function _applyEmotion(emotion) {
   console.log(`[Emotion] Applied: ${e}`);
 }
 /**
- * Speak text via the server's /api/v1/chat endpoint.
- * Receives audio_url + animation_matrix, plays audio and drives blendshapes.
+ * Speak text via /ws/tts. Emotion is passed to the server so it can bake
+ * emotional blendshapes into the animation matrix.
  */
-async function _speakText(text) {
+async function _speakText(text, emotion = 'happy') {
   if (!text?.trim()) return;
 
   _stopAudio();
@@ -150,7 +157,7 @@ async function _speakText(text) {
     const speed    = parseFloat(document.getElementById('speed-range')?.value   || '1.0');
     const numStep  = parseInt(document.getElementById('quality-select')?.value  || '16', 10);
 
-    await _speakViaLegacyTTS(text, instruct, speed, numStep);
+    await _speakViaLegacyTTS(text, instruct, speed, numStep, emotion);
   } catch (err) {
     console.error('[Speak]', err);
     updateStatusBadge('error');
@@ -159,73 +166,64 @@ async function _speakText(text) {
 }
 
 /**
- * Legacy TTS path: used for typed text input. Streams via /ws/tts WebSocket.
- * No animation matrix available — avatar stays in idle procedural motion.
+ * Legacy TTS path: streams via /ws/tts WebSocket.
+ * Sends emotion to server so it bakes emotion into the blendshape matrix.
+ * Also applies emotion to BehaviorManager so idle pose matches.
  */
-async function _speakViaLegacyTTS(text, instruct, speed, numStep) {
+async function _speakViaLegacyTTS(text, instruct, speed, numStep, emotion = 'happy') {
   return new Promise((resolve, reject) => {
-    console.log('[TTS-WS] Connecting to:', `${WS_BASE}/ws/tts`);
+    console.log('[TTS-WS] Connecting, emotion=' + emotion);
     const ws = new WebSocket(`${WS_BASE}/ws/tts`);
     ws.binaryType = 'arraybuffer';
 
     const audioChunks = [];
     let animationMatrix = null;
+    let serverEmotion   = emotion;
 
     ws.onopen = () => {
-      console.log('[TTS-WS] Connection opened, sending speak request for text:', text.substring(0, 40) + '...');
       ws.send(JSON.stringify({
         type: 'speak',
         text,
         instruct,
         speed,
         numStep,
+        emotion,   // ← tell server which emotion to bake in
       }));
     };
 
     ws.onmessage = (event) => {
-      const isBinary = event.data instanceof ArrayBuffer;
-      console.log('[TTS-WS] Message received. Binary:', isBinary, 'Type:', typeof event.data);
-      if (isBinary) {
-        console.log('[TTS-WS] Push binary chunk of size:', event.data.byteLength);
+      if (event.data instanceof ArrayBuffer) {
         audioChunks.push(new Float32Array(event.data));
         return;
       }
-
       try {
         const msg = JSON.parse(event.data);
-        console.log('[TTS-WS] Received JSON type:', msg.type, 'data:', msg.data || '');
-        if (msg.type === 'chunk') {
-          // next message will be binary
-        } else if (msg.type === 'status' && msg.data === 'complete') {
+        if (msg.type === 'status' && msg.data === 'complete') {
           animationMatrix = msg.animation_matrix || null;
-          console.log('[TTS-WS] Complete message received. Matrix length:', animationMatrix?.length || 0);
+          serverEmotion   = msg.emotion || emotion;
+          console.log('[TTS-WS] complete. frames=' + (animationMatrix?.length || 0) + ' emotion=' + serverEmotion);
           ws.close();
-        } else if (msg.type === 'status' && msg.data === 'error') {
+        } else if (msg.type === 'error') {
           reject(new Error(msg.message || 'TTS error'));
         }
       } catch (err) {
-        console.error('[TTS-WS] JSON parsing error:', err);
+        console.error('[TTS-WS] JSON parse error:', err);
       }
     };
 
     ws.onclose = () => {
-      console.log('[TTS-WS] Connection closed. Total chunks:', audioChunks.length);
       if (audioChunks.length === 0) {
-        console.warn('[TTS-WS] No audio chunks received!');
         resolve();
         return;
       }
-
-      // Play the accumulated audio
       const totalLen = audioChunks.reduce((s, c) => s + c.length, 0);
       const combined = new Float32Array(totalLen);
       let offset = 0;
-      for (const chunk of audioChunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
+      for (const chunk of audioChunks) { combined.set(chunk, offset); offset += chunk.length; }
 
-      console.log('[TTS-WS] Playing combined audio buffer of size:', combined.length);
+      // Apply emotion to behavior so idle pose also reflects the emotion
+      if (behavior) behavior.currentEmotion = serverEmotion;
+
       _playAudioBuffer(combined, 24000, animationMatrix);
       updateStatusBadge('speaking');
       updateProgressUI('▶️ Playing…', false);
@@ -233,7 +231,7 @@ async function _speakViaLegacyTTS(text, instruct, speed, numStep) {
     };
 
     ws.onerror = (err) => {
-      console.error('[TTS-WS] WebSocket error:', err);
+      console.error('[TTS-WS] error:', err);
       reject(new Error('WebSocket error'));
     };
   });
@@ -314,9 +312,13 @@ async function _sendAudioToUnifiedAPI(audioBlob) {
 
     const data = await res.json();
     const { audio_url, animation_matrix, emotion } = data;
+<<<<<<< HEAD
 
     // Apply emotion to avatar body + suit color
     _applyEmotion(emotion);
+=======
+    if (emotion && behavior) behavior.currentEmotion = emotion;
+>>>>>>> 6fbb4b4 (reverted)
 
     updateProgressUI('🔊 Playing response…', true);
 
@@ -364,17 +366,24 @@ function setupEventListeners() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reply = await res.json();
       if (reply && (reply.native_text || reply.reply)) {
-        const native = reply.native_text || reply.reply || text;
+        const native  = reply.native_text || reply.reply || text;
+        const emotion = reply.emotion || 'happy';
         document.getElementById('text-input').value = `🤖 Avatar: ${native}`;
+<<<<<<< HEAD
         _applyEmotion(reply.emotion);
         _speakText(native);
+=======
+        // Apply idle emotion immediately (will persist during speech)
+        if (behavior) behavior.currentEmotion = emotion;
+        _speakText(native, emotion);
+>>>>>>> 6fbb4b4 (reverted)
         return;
       }
     } catch (_err) {
       console.warn('[Chat] Brain unavailable, speaking typed text directly');
     }
 
-    _speakText(text);
+    _speakText(text, 'neutral');
   });
 
   // Stop button

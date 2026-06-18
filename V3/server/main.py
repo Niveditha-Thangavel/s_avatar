@@ -127,16 +127,16 @@ async def serve_audio(audio_id: str):
 @app.get("/health")
 async def health():
     from server.tts_engine         import _model          as tts_m
-    from server.stt_engine         import _pipe           as stt_p
+    from server.stt_engine         import _model          as stt_m
     from server.llm_engine         import _model          as llm_m
     from server.translation_engine import _model          as trans_m
     return {
         "status":    "ok",
         "timestamp": time.time(),
         "omnivoice":  "loaded" if tts_m   else "loading",
-        "whisper":    "loaded" if stt_p   else "loading",
-        "granite":   "loaded" if llm_m   else "loading",
-        "small100":  "loaded" if trans_m else "loading",
+        "whisper":    "loaded" if stt_m   else "loading",
+        "granite":    "loaded" if llm_m   else "loading",
+        "small100":   "loaded" if trans_m else "loading",
     }
 
 
@@ -151,11 +151,11 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     if not req.text.strip():
-        return {"reply": "", "native_text": "", "emotion": "neutral"}
+        return {"reply": "", "native_text": "", "emotion": "happy"}
 
     payload = await generate_response(req.text.strip(), session_id=req.session_id)
     eng     = payload.get("response", "")
-    emotion = payload.get("emotion", "neutral")
+    emotion = payload.get("emotion", "happy")
     intent  = payload.get("intent",  "unknown")
 
     native, _ = await translate_from_english(eng, req.lang)
@@ -188,6 +188,7 @@ async def ws_tts(websocket: WebSocket):
                 instruct = msg.get("instruct") or None
                 speed    = float(msg.get("speed", 1.0))
                 steps    = int(msg.get("numStep", 16))
+                emotion  = msg.get("emotion", "happy")   # passed by frontend
 
                 if not text:
                     await _j(websocket, {"type": "error", "message": "Empty text"})
@@ -219,13 +220,19 @@ async def ws_tts(websocket: WebSocket):
                             animation_matrix = await loop.run_in_executor(
                                 None, extract_blendshapes, full_audio, tts_sr
                             )
+                            # Parse inline tokens from the text and apply emotion
+                            _, inline_tokens = _parse_emotion_tokens(text)
+                            animation_matrix = _apply_emotion_to_matrix(
+                                animation_matrix, emotion, inline_tokens
+                            )
                         except Exception as exc:
-                            logger.warning("[TTS-WS] PantoMatrix failed: %s", exc)
+                            logger.warning("[TTS-WS] PantoMatrix/emotion failed: %s", exc)
 
                     await _j(websocket, {
-                        "type": "status",
-                        "data": "complete",
+                        "type":             "status",
+                        "data":             "complete",
                         "animation_matrix": animation_matrix,
+                        "emotion":          emotion,
                     })
                 except Exception as exc:
                     logger.exception("[TTS-WS] Synthesis error: %s", exc)
@@ -318,7 +325,7 @@ async def ws_stt(websocket: WebSocket):
                         continue
 
                     eng_response = payload.get("response", "")
-                    emotion      = payload.get("emotion", "neutral")
+                    emotion      = payload.get("emotion", "happy")
                     intent       = payload.get("intent",  "unknown")
 
                     if not eng_response.strip():
@@ -358,76 +365,139 @@ async def ws_stt(websocket: WebSocket):
 
 # ── /api/v1/chat — unified endpoint ──────────────────────────────────────────
 
-_EMOTION_CLAMPS = {
-    "laughter": {
-        "mouthSmileLeft": 0.8,
-        "mouthSmileRight": 0.8,
-        "cheekSquintLeft": 0.5,
-        "cheekSquintRight": 0.5,
-        "eyeSquintLeft": 0.5,
-        "eyeSquintRight": 0.5,
+_EMOTION_BLENDSHAPES = {
+    # Each emotion maps to a dict of {shape: target_weight}.
+    # These are BLENDED into every animation frame at a fixed strength
+    # so the avatar holds the emotional expression throughout speech.
+    # Weights are additive on top of the phoneme-driven shapes.
+    "neutral": {},
+    "happy": {
+        "mouthSmileLeft":   0.50,
+        "mouthSmileRight":  0.50,
+        "cheekSquintLeft":  0.30,
+        "cheekSquintRight": 0.30,
+        "browOuterUpLeft":  0.20,
+        "browOuterUpRight": 0.20,
     },
-    "sigh": {
-        "jawOpen": 0.3,
-        "browInnerUp": 0.2,
+    "sad": {
+        "mouthFrownLeft":   0.50,
+        "mouthFrownRight":  0.50,
+        "browInnerUp":      0.45,
+        "browDownLeft":     0.15,
+        "browDownRight":    0.15,
     },
-    "surprise-oh": {
-        "jawOpen": 0.6,
-        "browInnerUp": 0.5,
-        "browOuterUpLeft": 0.3,
-        "browOuterUpRight": 0.3,
-        "eyeWideLeft": 0.5,
-        "eyeWideRight": 0.5,
+    "angry": {
+        "browDownLeft":     0.65,
+        "browDownRight":    0.65,
+        "eyeSquintLeft":    0.40,
+        "eyeSquintRight":   0.40,
+        "mouthFrownLeft":   0.30,
+        "mouthFrownRight":  0.30,
+        "noseSneerLeft":    0.25,
+        "noseSneerRight":   0.25,
     },
-    "dissatisfaction-hnn": {
-        "mouthFrownLeft": 0.4,
-        "mouthFrownRight": 0.4,
-        "browDownLeft": 0.3,
-        "browDownRight": 0.3,
+    "surprised": {
+        "eyeWideLeft":      0.60,
+        "eyeWideRight":     0.60,
+        "browInnerUp":      0.55,
+        "browOuterUpLeft":  0.45,
+        "browOuterUpRight": 0.45,
+        "mouthShrugUpper":  0.20,
+    },
+    "fearful": {
+        "eyeWideLeft":      0.45,
+        "eyeWideRight":     0.45,
+        "browInnerUp":      0.50,
+        "browOuterUpLeft":  0.30,
+        "browOuterUpRight": 0.30,
+        "mouthFrownLeft":   0.25,
+        "mouthFrownRight":  0.25,
     },
 }
 
-_EMOTION_PATTERN = re.compile(r'\[(.*?)\]', re.IGNORECASE)
+# Inline OmniVoice emotion tokens — floor-clamp specific shapes
+# (these fire only when the LLM embeds [laughter] etc. in the response text)
+_INLINE_TOKEN_CLAMPS = {
+    "laughter": {
+        "mouthSmileLeft":   0.80,
+        "mouthSmileRight":  0.80,
+        "cheekSquintLeft":  0.55,
+        "cheekSquintRight": 0.55,
+        "eyeSquintLeft":    0.50,
+        "eyeSquintRight":   0.50,
+    },
+    "sigh": {
+        "jawOpen":    0.30,
+        "browInnerUp": 0.20,
+    },
+    "surprise-oh": {
+        "jawOpen":         0.60,
+        "browInnerUp":     0.50,
+        "browOuterUpLeft":  0.35,
+        "browOuterUpRight": 0.35,
+        "eyeWideLeft":     0.55,
+        "eyeWideRight":    0.55,
+    },
+    "dissatisfaction-hnn": {
+        "mouthFrownLeft":  0.45,
+        "mouthFrownRight": 0.45,
+        "browDownLeft":    0.35,
+        "browDownRight":   0.35,
+    },
+}
+
+_INLINE_PATTERN = re.compile(r'\[(.*?)\]', re.IGNORECASE)
 
 
 def _parse_emotion_tokens(text: str) -> tuple:
-    """Parse emotion tokens from text.
-
-    Returns (original_text_with_brackets, list_of_emotion_names).
-    Tokens are NOT stripped — they remain in the text for translation.
-    Names are returned case-insensitively for clamping.
     """
-    tokens = _EMOTION_PATTERN.findall(text)
-    emotions = [t.strip().lower() for t in tokens if t.strip().lower() in _EMOTION_CLAMPS]
-    return text, emotions
+    Parse inline OmniVoice emotion tokens from LLM response text.
+    Returns (original_text_with_brackets, list_of_inline_token_names).
+    Tokens stay in the text so OmniVoice can render them as vocal effects.
+    """
+    tokens  = _INLINE_PATTERN.findall(text)
+    inlines = [t.strip().lower() for t in tokens if t.strip().lower() in _INLINE_TOKEN_CLAMPS]
+    return text, inlines
 
 
 def _sanitize_for_omni(text: str) -> str:
-    """Strip whitespace wrapping bracketed tokens for OmniVoice tokenizer.
-    E.g. 'Hello [laughter] text' → 'Hello[laughter]text'
-    """
+    """Strip whitespace around bracketed tokens for OmniVoice tokenizer."""
     result = re.sub(r'\s*(\[.*?\])\s*', r'\1', text)
     result = re.sub(r'\s+', ' ', result)
     return result.strip()
 
 
-def _apply_emotion_clamps(matrix: list, emotions: list) -> list:
-    """Apply emotion-based blend shape clamps to the animation matrix."""
-    if not emotions:
+def _apply_emotion_to_matrix(matrix: list, llm_emotion: str, inline_tokens: list) -> list:
+    """
+    Bake LLM emotion AND inline token shapes into every frame of the matrix.
+
+    Two passes:
+    1. Blend LLM emotion shapes additively into every frame (persistent expression).
+    2. Floor-clamp inline token shapes (fire at their peak moments).
+    """
+    if not matrix:
         return matrix
 
-    clamps = {}
-    for em in emotions:
-        clamps.update(_EMOTION_CLAMPS.get(em, {}))
+    # ── Pass 1: blend persistent emotion expression into every frame ────────
+    emotion_shapes = _EMOTION_BLENDSHAPES.get(llm_emotion, {})
+    if emotion_shapes:
+        for frame in matrix:
+            bs = frame["blendshapes"]
+            for shape, target in emotion_shapes.items():
+                current = bs.get(shape, 0.0)
+                # Additive blend: take the max so phoneme shapes aren't suppressed
+                bs[shape] = min(1.0, max(current, current + (target - current) * 0.6))
 
-    if not clamps:
-        return matrix
-
-    for frame in matrix:
-        bs = frame["blendshapes"]
-        for shape_name, min_val in clamps.items():
-            current = bs.get(shape_name, 0.0)
-            bs[shape_name] = max(current, min_val)
+    # ── Pass 2: floor-clamp inline token shapes ──────────────────────────────
+    if inline_tokens:
+        clamps = {}
+        for token in inline_tokens:
+            clamps.update(_INLINE_TOKEN_CLAMPS.get(token, {}))
+        if clamps:
+            for frame in matrix:
+                bs = frame["blendshapes"]
+                for shape, min_val in clamps.items():
+                    bs[shape] = max(bs.get(shape, 0.0), min_val)
 
     return matrix
 
@@ -501,15 +571,16 @@ async def api_v1_chat(
         raise HTTPException(500, f"LLM failed: {exc}")
 
     eng_response = payload.get("response", "")
+    llm_emotion  = payload.get("emotion", "happy")
     if not eng_response.strip():
         eng_response = "I'm sorry, I didn't understand that."
 
     logger.info("[API] LLM response: %s", eng_response[:120])
 
     # ── 5. Parse emotion tokens from LLM response ───────────────────────────
-    eng_with_tokens, emotions = _parse_emotion_tokens(eng_response)
-    if emotions:
-        logger.info("[API] Detected emotion tokens: %s", emotions)
+    eng_with_tokens, inline_tokens = _parse_emotion_tokens(eng_response)
+    if inline_tokens:
+        logger.info("[API] Inline emotion tokens: %s", inline_tokens)
 
     # ── 6. SMaLL-100 → native (preserving emotion tokens) ───────────────────
     if user_lang == "en":
@@ -575,9 +646,9 @@ async def api_v1_chat(
         logger.error("[API] PantoMatrix failed: %s", exc)
         matrix = []
 
-    # ── 9. Apply emotion clamps ────────────────────────────────────────
-    if emotions:
-        matrix = _apply_emotion_clamps(matrix, emotions)
+    # ── 9. Apply emotion blendshapes to every frame ─────────────────────────
+    matrix = _apply_emotion_to_matrix(matrix, llm_emotion, inline_tokens)
+    logger.info("[API] emotion=%s inline=%s frames=%d", llm_emotion, inline_tokens, len(matrix))
 
     # ── 10. Cleanup: remove old entries from store ───────────────────────────
     if len(_audio_store) > 100:
@@ -592,8 +663,12 @@ async def api_v1_chat(
     return {
         "audio_url": audio_url,
         "animation_matrix": matrix,
+<<<<<<< HEAD
         "emotion": payload.get("emotion", "neutral"),
         "intent":  payload.get("intent",  "unknown"),
+=======
+        "emotion": llm_emotion,
+>>>>>>> 6fbb4b4 (reverted)
     }
 
 

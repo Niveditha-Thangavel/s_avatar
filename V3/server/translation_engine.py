@@ -1,15 +1,21 @@
 """
 translation_engine.py — SMaLL-100  (GPU-optimised)
 
-GPU path (CUDA):
-  • float16 weights
-  • torch.compile (reduce-overhead)
-  • autocast for both encode + generate
-  • num_beams=2 on GPU (was 5) — 2.5× faster with negligible quality loss
-    for short avatar responses (1-3 sentences)
-  • Dedicated single-thread executor
+Supports all 100 SMaLL-100 languages — same list as the FLORES-101 benchmark:
+  af am ar ast az ba be bg bn br bs ca ceb cs cy da de el en es et fa ff fi
+  fr fy ga gd gl gu ha he hi hr ht hu hy id ig ilo is it ja jv ka kk km kn
+  ko lb lg ln lo lt lv mg mk ml mn mr ms my ne nl no ns oc or pa pl ps pt ro
+  ru sd si sk sl so sq sr ss su sv sw ta th tl tn tr uk ur uz vi wo xh yi yo
+  zh zu
 
-MPS / CPU: float32, num_beams=4, no compile
+Whisper → SMaLL-100 code mapping:
+  Whisper uses ISO 639-1 codes. SMaLL-100 uses the same codes with a few
+  exceptions listed in _WHISPER_TO_SMALL100. All others pass through unchanged.
+
+GPU path (CUDA):
+  float16, torch.compile(reduce-overhead), autocast, num_beams=2
+MPS / CPU:
+  float32, num_beams=4, no compile
 """
 
 import asyncio
@@ -50,7 +56,6 @@ def _load_tokenizer_class():
         filename="tokenization_small100.py",
         cache_dir=cache,
     )
-    # Patch for transformers 5.x
     with open(path, "r", encoding="utf-8") as f:
         src = f.read()
     old = "from transformers.tokenization_utils import BatchEncoding, PreTrainedTokenizer"
@@ -102,7 +107,8 @@ async def get_model():
             except Exception as e:
                 logger.warning("[Trans] torch.compile skipped: %s", e)
 
-        logger.info("[Trans] ✅ SMaLL-100 ready on %s", device)
+        logger.info("[Trans] ✅ SMaLL-100 ready on %s (%d languages)", device,
+                    len(_tokenizer.lang_code_to_token))
         return _model, _tokenizer
 
 
@@ -110,29 +116,64 @@ async def load_translation_model():
     await get_model()
 
 
-_LANG_MAP = {"zh": "zh", "pt": "pt", "jw": "jv", "sr": "sr"}
+# ── Language code mapping ─────────────────────────────────────────────────────
+# Whisper detects languages using ISO 639-1 codes.
+# SMaLL-100 uses the same codes for all 100 languages it supports EXCEPT
+# Javanese: Whisper returns "jw", SMaLL-100 expects "jv".
+# All other codes pass through unchanged.
+
+_WHISPER_TO_SMALL100 = {
+    "jw": "jv",   # Javanese: Whisper code → SMaLL-100 code
+}
+
+# Full set of 100 SMaLL-100 language codes (verified from tokenizer.lang_code_to_token)
+# Edge cases:
+#   kn (Kannada):  tokenizer accepts it but en→kn generation produces English output
+#                  (SMaLL-100 training gap) — pipeline serves English to Kannada users
+#   wo (Wolof):    en→wo produces repetitive output — rare language, known model weakness
+#   mn (Mongolian): uses Cyrillic script (0x0400-0x04FF), not traditional Mongolian script
+_SMALL100_LANGS = frozenset({
+    "af","am","ar","ast","az","ba","be","bg","bn","br","bs","ca","ceb","cs",
+    "cy","da","de","el","en","es","et","fa","ff","fi","fr","fy","ga","gd","gl",
+    "gu","ha","he","hi","hr","ht","hu","hy","id","ig","ilo","is","it","ja","jv",
+    "ka","kk","km","kn","ko","lb","lg","ln","lo","lt","lv","mg","mk","ml","mn",
+    "mr","ms","my","ne","nl","no","ns","oc","or","pa","pl","ps","pt","ro","ru",
+    "sd","si","sk","sl","so","sq","sr","ss","su","sv","sw","ta","th","tl","tn",
+    "tr","uk","ur","uz","vi","wo","xh","yi","yo","zh","zu",
+})
 
 
-def _resolve_lang(code: str) -> str:
-    return _LANG_MAP.get(code, code)
+def _resolve(whisper_code: str) -> str | None:
+    """
+    Map a Whisper language code to the SMaLL-100 code.
+    Returns None if the language is not supported by SMaLL-100.
+    """
+    code = _WHISPER_TO_SMALL100.get(whisper_code, whisper_code)
+    return code if code in _SMALL100_LANGS else None
+
+
+def _num_beams(device: str) -> int:
+    return 2 if device == "cuda" else 4
 
 
 # ── Romanisation ──────────────────────────────────────────────────────────────
-
 _LATIN_LANGS = {
-    "en","fr","es","de","pt","it","nl","sv","da","no","fi","ro","pl",
-    "cs","hu","vi","id","ms","tl","sw","af","sq","bs","ca","hr","et",
-    "lv","lt","mk","sk","sl",
+    "af","ast","az","bs","ca","cs","cy","da","de","en","es","et","fi","fr","fy",
+    "ga","gd","gl","hr","ht","hu","id","ilo","is","it","lb","lt","lv","mg","mk",
+    "ms","nl","no","ns","oc","pl","pt","ro","sk","sl","so","sq","ss","su","sv",
+    "sw","tl","tn","tr","uz","vi","wo","xh","zu",
 }
+
 _ISO1_TO_3 = {
-    "hi":"hin","mr":"mar","ne":"nep","sa":"san","ta":"tam","te":"tel",
-    "kn":"kan","ml":"mal","bn":"ben","gu":"guj","pa":"pan","or":"ori",
-    "si":"sin","ar":"ara","fa":"fas","ur":"urd","he":"heb","ja":"jpn",
-    "zh":"cmn","yue":"yue","ko":"kor","th":"tha","lo":"lao","my":"mya",
-    "km":"khm","ru":"rus","uk":"ukr","be":"bel","bg":"bul","sr":"srp",
-    "hr":"hrv","sl":"slv","el":"ell","am":"amh","ti":"tir","ka":"kat",
-    "hy":"hye","dv":"div","ps":"pus","ku":"kur","bo":"bod","dz":"dzo",
+    "hi":"hin","mr":"mar","ne":"nep","ta":"tam","te":"tel","kn":"kan","ml":"mal",
+    "bn":"ben","gu":"guj","pa":"pan","or":"ori","si":"sin","ur":"urd","sd":"snd",
+    "ar":"ara","fa":"fas","he":"heb","ja":"jpn","zh":"cmn","ko":"kor","th":"tha",
+    "lo":"lao","my":"mya","km":"khm","ru":"rus","uk":"ukr","be":"bel","bg":"bul",
+    "sr":"srp","el":"ell","am":"amh","ka":"kat","hy":"hye","ps":"pus","mn":"mon",
+    "kk":"kaz","az":"aze","ba":"bak","tt":"tat","uz":"uzb","yi":"yid","yo":"yor",
+    "ha":"hau","ig":"ibo","ln":"lin","lg":"lug","ff":"ful","wo":"wol",
 }
+
 _uroman = None
 
 
@@ -145,6 +186,7 @@ def _get_uroman():
 
 
 def _romanize(text: str, lang: str) -> str:
+    """Convert native-script text to Latin for lipsync. Latin-script langs returned as-is."""
     if not text.strip() or lang in _LATIN_LANGS:
         return text
     try:
@@ -154,41 +196,49 @@ def _romanize(text: str, lang: str) -> str:
         return anyascii(text)
 
 
-# ── Translation helpers ───────────────────────────────────────────────────────
-
-def _num_beams(device: str) -> int:
-    # Fewer beams on GPU — fast enough and responses are short
-    return 2 if device == "cuda" else 4
-
+# ── Public API ────────────────────────────────────────────────────────────────
 
 async def translate_from_english(english_text: str, target_lang: str) -> Tuple[str, str]:
+    """
+    Translate English LLM response → target_lang native script.
+
+    Returns (native_text, romanized_text).
+    Falls back to (english_text, english_text) for unsupported languages.
+    """
     if not english_text.strip():
         return "", ""
     if target_lang == "en":
         return english_text, english_text
 
-    tgt              = _resolve_lang(target_lang)
+    tgt = _resolve(target_lang)
+    if tgt is None:
+        logger.warning("[Trans] '%s' not in SMaLL-100 — returning English", target_lang)
+        return english_text, english_text
+
     model, tokenizer = await get_model()
-    device           = _get_device()
-    beams            = _num_beams(device)
-    loop             = asyncio.get_event_loop()
+    device = _get_device()
+    beams  = _num_beams(device)
+    loop   = asyncio.get_event_loop()
 
     def _run():
-        tokenizer.tgt_lang = tgt
+        try:
+            tokenizer.tgt_lang = tgt
+        except KeyError:
+            logger.warning("[Trans] tokenizer.tgt_lang='%s' failed — returning English", tgt)
+            return english_text, english_text
+
         enc = tokenizer(
             english_text, return_tensors="pt", truncation=True, max_length=512,
         ).to(model.device)
+
         try:
             lang_id = tokenizer.get_lang_id(tgt)
         except Exception:
-            logger.warning("[Trans] Lang '%s' unsupported, using English", tgt)
+            logger.warning("[Trans] get_lang_id('%s') failed — returning English", tgt)
             return english_text, english_text
 
-        ctx = (
-            torch.cuda.amp.autocast(dtype=torch.float16)
-            if device == "cuda"
-            else _null_ctx()
-        )
+        ctx = (torch.cuda.amp.autocast(dtype=torch.float16)
+               if device == "cuda" else _null_ctx())
         with torch.no_grad(), ctx:
             gen = model.generate(
                 **enc,
@@ -196,6 +246,7 @@ async def translate_from_english(english_text: str, target_lang: str) -> Tuple[s
                 num_beams=beams,
                 max_length=256,
             )
+
         native    = tokenizer.batch_decode(gen, skip_special_tokens=True)[0].strip()
         romanized = _romanize(native, target_lang)
         logger.info("[Trans] en→%s: %s", tgt, native[:100])
@@ -205,36 +256,42 @@ async def translate_from_english(english_text: str, target_lang: str) -> Tuple[s
 
 
 async def translate_to_english(text: str, src_lang: str) -> str:
+    """
+    Translate src_lang native text → English for the LLM.
+
+    Falls back to original text for unsupported languages
+    (LLM handles many scripts directly).
+    """
     if not text.strip() or src_lang == "en":
         return text
 
-    src              = _resolve_lang(src_lang)
+    src = _resolve(src_lang)
+    if src is None:
+        logger.warning("[Trans] src '%s' not in SMaLL-100 — passing text as-is to LLM", src_lang)
+        return text
+
     model, tokenizer = await get_model()
-    device           = _get_device()
-    beams            = _num_beams(device)
-    loop             = asyncio.get_event_loop()
+    device = _get_device()
+    beams  = _num_beams(device)
+    loop   = asyncio.get_event_loop()
 
     def _run():
         try:
-            tokenizer.get_lang_id(src)
-        except Exception:
-            logger.warning("[Trans] Source lang '%s' unsupported, using original", src)
+            tokenizer.tgt_lang = "en"
+        except KeyError:
             return text
 
-        tokenizer.tgt_lang = "en"
         enc = tokenizer(
             text, return_tensors="pt", truncation=True, max_length=512,
         ).to(model.device)
+
         try:
             en_id = tokenizer.get_lang_id("en")
         except Exception:
             return text
 
-        ctx = (
-            torch.cuda.amp.autocast(dtype=torch.float16)
-            if device == "cuda"
-            else _null_ctx()
-        )
+        ctx = (torch.cuda.amp.autocast(dtype=torch.float16)
+               if device == "cuda" else _null_ctx())
         with torch.no_grad(), ctx:
             gen = model.generate(
                 **enc,
@@ -242,6 +299,7 @@ async def translate_to_english(text: str, src_lang: str) -> str:
                 num_beams=beams,
                 max_length=256,
             )
+
         english = tokenizer.batch_decode(gen, skip_special_tokens=True)[0].strip()
         logger.info("[Trans] %s→en: %s", src, english[:120])
         return english or text

@@ -1,62 +1,68 @@
-# Dockerfile.server — Python backend (Whisper STT, SMaLL-100, Granite, OmniVoice, PantoMatrix)
+# Dockerfile.server — Python backend
+# STT: Whisper large-v3-turbo | LLM: Granite 4.0 Nano | Trans: SMaLL-100 | TTS: OmniVoice
 #
-# Build context must be the project root (V3/) — not server/ subdirectory.
+# Build context: V3/ (project root)
 #
-# Local (M-series Mac):
+# ── CPU build (local dev) ──────────────────────────────────────────────────────
 #   docker build -f Dockerfile.server -t avatar-server .
 #
-# GPU server (override base image & torch index):
+# ── GPU build (production) ────────────────────────────────────────────────────
 #   docker build -f Dockerfile.server \
 #     --build-arg BASE_IMAGE=pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime \
 #     --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 \
-#     -t avatar-server .
+#     --build-arg SKIP_TORCH_INSTALL=true \
+#     -t avatar-server-gpu .
 
 ARG BASE_IMAGE=python:3.11-slim
-FROM $BASE_IMAGE
+FROM ${BASE_IMAGE}
 
-# Default: CPU-only torch (works on both ARM64 and x86_64 Linux)
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
-
-# GPU base images (pytorch/pytorch) ship torch via conda — pip would re-download.
-# Set SKIP_TORCH_INSTALL=true to skip this layer on GPU builds.
 ARG SKIP_TORCH_INSTALL=false
+ARG WHISPER_MODEL_ID=openai/whisper-large-v3-turbo
 
+# WORKDIR is /app — server/ lives as a sub-package at /app/server/
+# This makes `from server.tts_engine import ...` resolve correctly.
 WORKDIR /app
 
-# System deps
+# ── System deps ───────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    curl \
-    perl \
-    ffmpeg \
-    libsndfile1 \
+    build-essential gcc curl perl ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# PyTorch (CPU by default; override via --build-arg for CUDA)
+# ── PyTorch ───────────────────────────────────────────────────────────────────
 RUN if [ "$SKIP_TORCH_INSTALL" != "true" ]; then \
-      pip install --no-cache-dir torch==2.5.1 torchaudio==2.5.1 --index-url $TORCH_INDEX_URL; \
+      pip install --no-cache-dir \
+        torch==2.5.1 torchaudio==2.5.1 \
+        --index-url ${TORCH_INDEX_URL}; \
     fi
 
-# Python deps
-COPY server/requirements.txt server/
+# ── Python deps ───────────────────────────────────────────────────────────────
+COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# Consistent model cache paths — match docker-compose volumes
+# ── Cache paths ───────────────────────────────────────────────────────────────
 ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
-
-# Pre-download all models at build time
-COPY server/download_models.py server/
-RUN python server/download_models.py
-
-# Server source
-COPY server/*.py server/
-# Reference audio for voice cloning (late copy — doesn't invalidate model cache)
-COPY server/ref_audio.wav server/ref_text.txt server/
-
-ENV PYTHONUNBUFFERED=1
+ENV WHISPER_MODEL_ID=${WHISPER_MODEL_ID}
 ENV TOKENIZERS_PARALLELISM=false
+ENV PYTHONUNBUFFERED=1
+
+# ── Pre-download all models at build time ─────────────────────────────────────
+# Copy download script into server/ package, run from /app so imports work
+COPY server/download_models.py server/download_models.py
+COPY server/__init__.py server/__init__.py
+RUN python -c "from server.download_models import *" 2>/dev/null || python server/download_models.py
+
+# ── Server source (late COPY — keeps model cache layer intact) ────────────────
+COPY server/*.py server/
+COPY server/ref_audio.wav server/ref_audio.wav
+COPY server/ref_text.txt  server/ref_text.txt
 
 EXPOSE 8765
 
-CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8765", "--log-level", "info"]
+# Run as `server.main:app` from WORKDIR=/app so all `from server.xxx import`
+# statements resolve correctly against the /app/server/ package.
+CMD ["python", "-m", "uvicorn", "server.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8765", \
+     "--loop", "asyncio", \
+     "--log-level", "info"]

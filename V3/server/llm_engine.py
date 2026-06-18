@@ -2,12 +2,7 @@
 llm_engine.py — Granite 4.0 Nano  (GPU-optimised)
 
 GPU path (CUDA):
-  • bfloat16 (native on Ampere+; faster than float16, no loss in quality)
-  • torch.compile (reduce-overhead) — ~40% speedup on repeated prompts
-  • autocast for generation
-  • KV-cache enabled (default in transformers, but explicitly guarded)
-  • Dedicated single-thread executor
-
+  • bfloat16, torch.compile(reduce-overhead), autocast, KV-cache
 MPS / CPU: float32, no compile
 """
 
@@ -29,7 +24,6 @@ _lock      = asyncio.Lock()
 _sessions: Dict[str, deque] = {}
 MAX_TURNS = 10
 
-# Dedicated executor — LLM inference is long; keep it off the shared pool
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="llm")
 
 
@@ -57,22 +51,17 @@ async def load_model():
 
         from transformers import AutoModelForCausalLM, AutoTokenizer
         device = _get_device()
-        # bfloat16 on CUDA (supported on Ampere+, A100, H100, RTX 30xx+)
-        # float32 on MPS/CPU (bfloat16 not always reliable on MPS)
         dtype  = torch.bfloat16 if device == "cuda" else torch.float32
 
         logger.info("[LLM] Loading Granite '%s' on %s (%s)…", MODEL_ID, device, dtype)
         _tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
         _model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            device_map=device,
-            torch_dtype=dtype,
+            MODEL_ID, device_map=device, torch_dtype=dtype,
         )
         _model.eval()
 
         if device == "cuda":
             torch.backends.cudnn.benchmark = True
-            logger.info("[LLM] torch.compile (reduce_overhead) …")
             try:
                 _model = torch.compile(_model, mode="reduce-overhead", fullgraph=False)
                 logger.info("[LLM] torch.compile done")
@@ -83,44 +72,74 @@ async def load_model():
         return _model, _tokenizer
 
 
+# ── Valid emotion values ──────────────────────────────────────────────────────
+VALID_EMOTIONS = {"neutral", "happy", "sad", "angry", "surprised", "fearful"}
+
+
 def _build_system(user_emotion: str = "") -> str:
-    parts = [
-        "You are a friendly, helpful talking avatar assistant. "
-        "The user's speech has been translated to English for you. "
-    ]
-    if user_emotion:
-        parts.append(
-            f"The user's detected emotion is: {user_emotion}. "
-            "Acknowledge their emotional state naturally in your response. "
+    """
+    System prompt that forces the LLM to:
+    1. Always output valid JSON with the exact schema required.
+    2. Always fill the `emotion` field with one of the valid emotion labels.
+    3. Include inline emotion tokens in the response text where natural.
+    """
+    emotion_context = ""
+    if user_emotion and user_emotion != "neutral":
+        emotion_context = (
+            f'The user sounds {user_emotion}. '
+            "Acknowledge this naturally in your reply. "
         )
-    parts.append(
-        "Reply in English. Keep replies short — 1 to 3 sentences, natural for speech. "
+
+    return (
+        "You are a friendly talking avatar assistant. "
+        "Reply in English. Keep replies to 1-3 short sentences — natural for spoken audio. "
         "No markdown, no bullet points. "
-        "Crucial: In your response text, include emotion tokens in square brackets "
-        "where appropriate. Choose from: [laughter], [sigh], [surprise-oh], "
-        "[dissatisfaction-hnn]. "
-        "Output ONLY valid JSON with exactly these keys: "
-        '{"intent":"<label>","emotion":"<neutral|happy|sad|angry|surprised>","response":"<reply>"}'
+        + emotion_context +
+        "\n\n"
+        "EMOTION RULES:\n"
+        "1. Set `emotion` to exactly one of: neutral, happy, sad, angry, surprised, fearful\n"
+        "   - Use happy for positive, upbeat, or congratulatory replies\n"
+        "   - Use sad for condolences, disappointment, or sympathy\n"
+        "   - Use angry for frustration or strong disagreement\n"
+        "   - Use surprised for unexpected or astonishing information\n"
+        "   - Use fearful for warnings, danger, or alarming news\n"
+        "   - Use neutral for normal informational replies\n"
+        "2. Optionally embed ONE inline sound token in the response text:\n"
+        "   [laughter] — for funny or amusing moments\n"
+        "   [sigh]     — for relief, tiredness, or resigned acceptance\n"
+        "   [surprise-oh] — for sudden surprises\n"
+        "   [dissatisfaction-hnn] — for mild disappointment\n"
+        "   Example: 'That is wonderful news! [laughter] I am so happy for you.'\n"
+        "   Example: 'Oh no, that sounds difficult. [sigh] Let me help you.'\n"
+        "\n"
+        "OUTPUT FORMAT — respond with ONLY this JSON, nothing else:\n"
+        '{"intent":"<label>","emotion":"<neutral|happy|sad|angry|surprised|fearful>","response":"<1-3 sentence reply with optional inline token>"}'
     )
-    return "".join(parts)
 
 
 def _parse(raw: str) -> Dict[str, str]:
     text = raw.strip()
+    # Strip markdown code fences
     if text.startswith("```"):
         lines = text.splitlines()[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+    # Try full text then substring extraction
     for candidate in [text, text[text.find("{"):text.rfind("}")+1]]:
         try:
             p = json.loads(candidate)
             if "response" in p:
+                # Normalise emotion value — default to happy if missing/invalid
+                em = str(p.get("emotion", "happy")).lower().strip()
+                p["emotion"] = em if em in VALID_EMOTIONS else "happy"
                 return p
         except Exception:
             pass
+    # Fallback — return raw text as response with happy emotion
     return {
-        "intent": "unknown", "emotion": "neutral",
+        "intent":   "unknown",
+        "emotion":  "happy",
         "response": text.split("\n")[0][:300].strip() or "I'm here to help.",
     }
 
@@ -131,7 +150,7 @@ async def generate_response(
     user_emotion: str = "",
 ) -> Dict[str, str]:
     if not user_text.strip():
-        return {"intent": "empty", "emotion": "neutral",
+        return {"intent": "empty", "emotion": "happy",
                 "response": "I didn't catch that. Could you say that again?"}
 
     model, tokenizer = await load_model()
@@ -152,18 +171,17 @@ async def generate_response(
 
         ctx = (
             torch.cuda.amp.autocast(dtype=torch.bfloat16)
-            if device == "cuda"
-            else _null_ctx()
+            if device == "cuda" else _null_ctx()
         )
         with torch.no_grad(), ctx:
             out = model.generate(
                 **ids,
-                max_new_tokens=200,     # 256→200: shorter = faster, still plenty
+                max_new_tokens=200,
                 do_sample=True,
                 temperature=0.7,
                 top_p=0.9,
                 pad_token_id=tokenizer.eos_token_id,
-                use_cache=True,         # KV-cache — critical for GPU speed
+                use_cache=True,
             )
         new_ids = out[0][ids["input_ids"].shape[1]:]
         return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
@@ -172,11 +190,13 @@ async def generate_response(
         raw = await loop.run_in_executor(_executor, _run)
     except Exception as exc:
         logger.exception("[LLM] Inference failed: %s", exc)
-        return {"intent": "error", "emotion": "neutral",
+        return {"intent": "error", "emotion": "happy",
                 "response": "Sorry, I ran into a problem."}
 
     logger.info("[LLM] raw: %s", raw[:200])
     payload = _parse(raw)
+    logger.info("[LLM] emotion=%s response=%s", payload["emotion"], payload.get("response","")[:80])
+
     history.append({"role": "user",      "content": user_text})
     history.append({"role": "assistant", "content": payload.get("response", "")})
     return payload

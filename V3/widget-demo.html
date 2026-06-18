@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Avatar Widget Demo</title>
+
+  <!-- Importmap: required for Three.js CDN loading -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.184.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.184.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0a0f1e; color: #fff; }
+
+    /* ── Your existing app layout ── */
+    .app-layout {
+      display: flex;
+      height: 100vh;
+    }
+
+    .chat-sidebar {
+      width: 380px;
+      background: rgba(15,23,42,0.8);
+      border-right: 1px solid rgba(255,255,255,0.08);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-sidebar h2 {
+      font-size: 18px;
+      margin-bottom: 16px;
+      color: #00e676;
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .msg {
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .msg.user { background: rgba(0,230,118,0.12); align-self: flex-end; }
+    .msg.avatar { background: rgba(255,255,255,0.06); align-self: flex-start; }
+
+    .chat-input-row {
+      display: flex;
+      gap: 8px;
+    }
+    .chat-input-row input {
+      flex: 1;
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.3);
+      color: #fff;
+      font-size: 14px;
+      outline: none;
+    }
+    .chat-input-row input:focus { border-color: #00e676; }
+    .chat-input-row button {
+      padding: 10px 16px;
+      border-radius: 10px;
+      border: none;
+      background: #00e676;
+      color: #000;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .chat-input-row button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Avatar container (right panel) ── */
+    .avatar-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at center, #182036 0%, #0a0f1e 100%);
+    }
+
+    #avatar-container {
+      width: 100%;
+      height: 100%;
+      min-height: 500px;
+    }
+
+    .status-bar {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 20px;
+      border-radius: 20px;
+      background: rgba(0,0,0,0.6);
+      font-size: 13px;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-layout">
+    <!-- Left: Chat UI (your existing app) -->
+    <div class="chat-sidebar">
+      <h2>💬 Chat</h2>
+      <div class="chat-messages" id="chat-messages">
+        <div class="msg avatar">Hello! I'm your 3D avatar assistant.</div>
+      </div>
+      <div class="chat-input-row">
+        <input type="text" id="chat-input" placeholder="Type a message..." />
+        <button id="btn-send">Send</button>
+      </div>
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <select id="emotion-select" style="flex:1; padding:8px; border-radius:8px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.12);">
+          <option value="neutral">😐 Neutral</option>
+          <option value="happy">😊 Happy</option>
+          <option value="sad">😢 Sad</option>
+          <option value="angry">😠 Angry</option>
+          <option value="surprised">😲 Surprised</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Right: Avatar (drop-in widget) -->
+    <div class="avatar-panel" style="position:relative;">
+      <div id="avatar-container"></div>
+      <div class="status-bar" id="status-bar">Avatar loading…</div>
+    </div>
+  </div>
+
+  <!-- Load the widget -->
+  <script type="module">
+    import { AvatarWidget } from './avatar-widget.js';
+
+    // ── 1. Create the avatar ──────────────────────────────────────────────
+    const widget = new AvatarWidget({
+      container: document.getElementById('avatar-container'),
+      modelUrl: 'public/avatar_head.glb',
+      serverUrl: 'http://localhost:8765',  // your backend
+      onReady: () => {
+        document.getElementById('status-bar').textContent = '● Avatar ready';
+      }
+    });
+
+    // ── 2. Drive lipsync from your PantoMatrix data ───────────────────────
+    // Example: call this when you receive animation_matrix from the server
+    function onAnimationReceived(matrix) {
+      widget.setAnimationMatrix(matrix);
+      document.getElementById('status-bar').textContent = '🔊 Speaking…';
+    }
+
+    // When speech is done
+    function onSpeechEnd() {
+      widget.clearAnimation();
+      document.getElementById('status-bar').textContent = '● Idle';
+    }
+
+    // ── 3. Example: send text to backend, get audio + matrix ─────────────
+    async function speakText(text) {
+      if (!text.trim()) return;
+
+      document.getElementById('status-bar').textContent = '⏳ Generating…';
+
+      try {
+        // Step 1: Get LLM response
+        const chatRes = await fetch('http://localhost:8765/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, lang: 'en' })
+        });
+        const chatData = await chatRes.json();
+        const replyText = chatData.native_text || chatData.reply || text;
+
+        // Step 2: Get TTS audio + PantoMatrix
+        const formData = new FormData();
+        const wavBlob = await textToWavBlob(replyText);  // see note below
+        formData.append('file', wavBlob, 'audio.wav');
+
+        const ttsRes = await fetch('http://localhost:8765/api/v1/chat', {
+          method: 'POST',
+          body: formData
+        });
+        const ttsData = await ttsRes.json();
+
+        // Step 3: Apply emotion
+        if (ttsData.emotion) {
+          widget.setEmotion(ttsData.emotion);
+        }
+
+        // Step 4: Drive avatar
+        if (ttsData.animation_matrix) {
+          widget.setAnimationMatrix(ttsData.animation_matrix);
+        }
+
+        // Step 5: Play audio
+        if (ttsData.audio_url) {
+          const audio = new Audio(ttsData.audio_url);
+          audio.onended = () => widget.clearAnimation();
+          audio.play();
+        }
+
+        document.getElementById('status-bar').textContent = '🔊 Speaking…';
+
+        // Add to chat
+        addChatMessage('avatar', replyText);
+      } catch (err) {
+        console.error(err);
+        document.getElementById('status-bar').textContent = '⚠️ Error';
+      }
+    }
+
+    // ── Helper: placeholder — replace with actual mic recording ──────────
+    async function textToWavBlob(text) {
+      // In production, record mic audio here.
+      // For demo, we just send text via /ws/tts which is the legacy path.
+      // The unified /api/v1/chat expects a WAV file.
+      // For now we create a minimal silent WAV.
+      const sampleRate = 16000;
+      const numSamples = sampleRate; // 1 second of silence
+      const buffer = new ArrayBuffer(44 + numSamples * 2);
+      const view = new DataView(buffer);
+      const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+      writeStr(0, 'RIFF');
+      view.setUint32(4, 36 + numSamples * 2, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeStr(36, 'data');
+      view.setUint32(40, numSamples * 2, true);
+      return new Blob([buffer], { type: 'audio/wav' });
+    }
+
+    // ── Chat UI ──────────────────────────────────────────────────────────
+    function addChatMessage(role, text) {
+      const el = document.createElement('div');
+      el.className = `msg ${role}`;
+      el.textContent = text;
+      document.getElementById('chat-messages').appendChild(el);
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    document.getElementById('btn-send').addEventListener('click', async () => {
+      const input = document.getElementById('chat-input');
+      const text = input.value.trim();
+      if (!text) return;
+      addChatMessage('user', text);
+      input.value = '';
+      document.getElementById('btn-send').disabled = true;
+      await speakText(text);
+      document.getElementById('btn-send').disabled = false;
+    });
+
+    document.getElementById('chat-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('btn-send').click();
+    });
+
+    // Emotion selector
+    document.getElementById('emotion-select').addEventListener('change', (e) => {
+      widget.setEmotion(e.target.value);
+    });
+
+    // ── Or use the WebSocket legacy TTS path (simpler) ───────────────────
+    // See the existing main.js _speakViaLegacyTTS for full WebSocket example.
+    // The widget.setAnimationMatrix() works with any source of PantoMatrix data.
+  </script>
+</body>
+</html>
