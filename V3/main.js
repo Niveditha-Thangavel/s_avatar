@@ -3,24 +3,21 @@ import { BehaviorManager } from './src/behavior.js';
 import { STTManager } from './src/stt.js';
 
 // ── Server config ─────────────────────────────────────────────────────────────
+// Uses same-origin URLs so nginx (Docker) or Vite proxy (dev) handle forwarding.
+// Override with VITE_SERVER_URL / VITE_HTTP_URL env vars for custom domains.
+
 const getWsBase = () => {
   if (import.meta.env.VITE_SERVER_URL) {
     return import.meta.env.VITE_SERVER_URL;
   }
-  const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-  const host = isLocal ? 'localhost' : (import.meta.env.VITE_SERVER_HOST || 'localhost');
-  const port = import.meta.env.VITE_SERVER_PORT || '8765';
-  return `ws://${host}:${port}`;
+  return window.location.origin.replace(/^http/, 'ws');
 };
 
 const getHttpBase = () => {
   if (import.meta.env.VITE_HTTP_URL) {
     return import.meta.env.VITE_HTTP_URL;
   }
-  const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-  const host = isLocal ? 'localhost' : (import.meta.env.VITE_SERVER_HOST || 'localhost');
-  const port = import.meta.env.VITE_SERVER_PORT || '8765';
-  return `http://${host}:${port}`;
+  return window.location.origin;
 };
 
 const WS_BASE   = getWsBase();
