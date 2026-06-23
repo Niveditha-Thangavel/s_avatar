@@ -16,12 +16,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
     && ln -sf /usr/bin/python3.11 /usr/local/bin/python
 
+# Bootstrap pip for Python 3.11
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+
 # Upgrade pip
-RUN pip install --no-cache-dir --upgrade pip
+RUN python -m pip install --no-cache-dir --upgrade pip
 
 # Python deps
 COPY server/requirements.txt server/
-RUN pip install --no-cache-dir -r server/requirements.txt
+RUN python -m pip install --no-cache-dir -r server/requirements.txt
 
 # Model cache path (used both at build time and runtime)
 ENV CTRANSLATE2_CACHE=/root/.cache/ctranslate2
