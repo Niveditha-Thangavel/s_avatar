@@ -10,6 +10,15 @@ Endpoints:
   POST /chat                — typed text → direct TTS (for debugging)
 """
 
+import sys
+
+# Polyfill sys.get_int_max_str_digits if missing (e.g. in some Python 3.11 builds)
+# to prevent torch._dynamo import failures during startup.
+if not hasattr(sys, "get_int_max_str_digits"):
+    sys.get_int_max_str_digits = lambda: 4300
+if not hasattr(sys, "set_int_max_str_digits"):
+    sys.set_int_max_str_digits = lambda x: None
+
 import json
 import logging
 import os
