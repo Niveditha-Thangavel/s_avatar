@@ -12,9 +12,15 @@ SERVER_URL="${SERVER_URL:-http://localhost:8765}"
 case "${1:-help}" in
 
   up)
-    echo "=== Starting full S2S stack (1x GPU) ==="
+    echo "=== Starting full S2S stack ==="
     echo "Services: vexyl-stt | orchestrator | frontend"
-    docker compose up -d
+    if command -v nvidia-smi &> /dev/null; then
+      echo "GPU detected! Starting with GPU overrides..."
+      docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+    else
+      echo "No GPU detected. Starting in CPU-only fallback mode..."
+      docker compose up -d
+    fi
     echo ""
     echo "Frontend:     http://localhost:3005"
     echo "Orchestrator: http://localhost:8765/health"

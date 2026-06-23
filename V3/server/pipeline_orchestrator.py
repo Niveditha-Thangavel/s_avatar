@@ -61,7 +61,7 @@ NLLB_MODEL_PATH = os.environ.get(
 INDIC_TRANS2_EN_INDIC = NLLB_MODEL_PATH
 INDIC_TRANS2_INDIC_EN = NLLB_MODEL_PATH
 
-TRANSLATION_DEVICE = os.environ.get("TRANSLATION_DEVICE", "cpu")
+TRANSLATION_DEVICE = os.environ.get("TRANSLATION_DEVICE", "auto")
 
 # ── Static responses for local testing ────────────────────────────────────────
 _STATIC_RESPONSES = [
@@ -117,6 +117,22 @@ _LANG_TO_FLORES = {
 
 _FLORES_TO_LANG = {v: k for k, v in _LANG_TO_FLORES.items()}
 
+# Templates for the "(You said: {text})" suffix in target languages
+_YOU_SAID_TEMPLATES = {
+    "hi-IN": "(आपने कहा: {text})",
+    "ta-IN": "(நீங்கள் சொன்னீர்கள்: {text})",
+    "te-IN": "(మీరు చెప్పారు: {text})",
+    "ml-IN": "(നിങ്ങൾ പറഞ്ഞു: {text})",
+    "kn-IN": "(ನೀವು ಹೇಳಿದ್ದೀರಿ: {text})",
+    "mr-IN": "(आपण म्हणालात: {text})",
+    "gu-IN": "(તમે કહ્યું: {text})",
+    "bn-IN": "(আপনি বলেছেন: {text})",
+    "pa-IN": "(ਤੁਸੀਂ ਕਿਹਾ: {text})",
+    "or-IN": "(ଆପଣ କହିଲେ: {text})",
+    "as-IN": "(আপুনি কৈছিল: {text})",
+    "ur-IN": "(آپ نے کہا: {text})",
+}
+
 # Default to Hindi if unknown
 _DEFAULT_FLORES_SRC = "hin_Deva"
 
@@ -141,11 +157,15 @@ class IndicTrans2Engine:
         self,
         en_indic_path: str = INDIC_TRANS2_EN_INDIC,
         indic_en_path: str = INDIC_TRANS2_INDIC_EN,
-        device: str = "cpu",
+        device: str = "auto",
     ):
         # Both paths point to the same NLLB model folder
         self._model_path = en_indic_path
-        self._device = device
+        if device == "auto":
+            import torch
+            self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self._device = device
         self._translator: Optional["ctranslate2.Translator"] = None
         self._sp: Optional["sentencepiece.SentencePieceProcessor"] = None
         self._lock = asyncio.Lock()
@@ -515,7 +535,7 @@ class PipelineOrchestrator:
 
                 t0 = time.monotonic()
                 resp_text = next(_static_response_cycle)
-                event.response_text = f"{resp_text} (You said: {event.english_text})"
+                event.response_text = resp_text
                 event.stage_timing["llm_done"] = time.monotonic() - t0
                 await self._response_queue.put(event)
 
@@ -536,10 +556,13 @@ class PipelineOrchestrator:
                     continue
 
                 t0 = time.monotonic()
-                indic = await self._trans.eng_to_indic(
+                indic_response = await self._trans.eng_to_indic(
                     event.response_text, self._flores_src
                 )
-                event.indic_text = indic
+                suffix = _YOU_SAID_TEMPLATES.get(
+                    self._lang_bcp47, "(You said: {text})"
+                ).format(text=event.source_text)
+                event.indic_text = f"{indic_response} {suffix}"
                 event.stage_timing["trans2_done"] = time.monotonic() - t0
                 await self._indic_queue.put(event)
 

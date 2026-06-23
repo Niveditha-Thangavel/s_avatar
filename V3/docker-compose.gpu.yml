@@ -7,6 +7,8 @@
 
 services:
   vexyl-stt:
+    environment:
+      - VEXYL_STT_DEVICE=cuda
     deploy:
       resources:
         reservations:

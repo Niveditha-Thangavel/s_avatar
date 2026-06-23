@@ -183,8 +183,12 @@
     if(_bufTimer) { clearTimeout(_bufTimer); _bufTimer=null; }
     if(_bufChunks.length===0) return;
     console.log(`[Widget] Flush ${_bufChunks.length} chunks (reason=${reason})`);
+
+    const ctx=ensureACtx();
+    const audioStartTime = nextPlayAt < ctx.currentTime ? ctx.currentTime : nextPlayAt;
+    widget.syncAudio(ctx, audioStartTime);
+
     for(const c of _bufChunks) {
-      const ctx=ensureACtx();
       const buf=ctx.createBuffer(1,c.f32.length,c.sampleRate);
       buf.getChannelData(0).set(c.f32);
       const src=ctx.createBufferSource(); src.buffer=buf; src.connect(ctx.destination);

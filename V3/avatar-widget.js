@@ -184,6 +184,11 @@ export class AvatarWidget {
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
+  syncAudio(audioContext, audioStartTime) {
+    this._audioContext = audioContext;
+    this._audioStartTime = audioStartTime;
+  }
+
   setAnimationMatrix(matrix) {
     this.currentAnimationMatrix = matrix || [];
     this.activeTargetWeights = {};
@@ -195,6 +200,8 @@ export class AvatarWidget {
     this.currentAnimationMatrix = null;
     this.activeTargetWeights = {};
     this.isSpeaking = false;
+    this._audioContext = null;
+    this._audioStartTime = null;
     this.morphMeshes.forEach((mesh) => {
       if (mesh.morphTargetInfluences) {
         for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
@@ -302,9 +309,14 @@ export class AvatarWidget {
     this._setGaze(this.gazeOffset.x * 20.0, this.gazeOffset.y * 20.0);
     this._setBlink(this.blinkVal);
 
-    // Server-driven blendshapes (lip-sync from PantoMatrix)
     if (this.isSpeaking) {
-      const elapsed = performance.now() / 1000 - this.animationStartTime;
+      let elapsed;
+      if (this._audioContext && this._audioStartTime !== undefined && this._audioStartTime !== null) {
+        const latency = this._audioContext.outputLatency || 0.08;
+        elapsed = this._audioContext.currentTime - this._audioStartTime - latency;
+      } else {
+        elapsed = performance.now() / 1000 - this.animationStartTime;
+      }
       this._updateFromMatrix(elapsed);
       if (Object.keys(this.activeTargetWeights).length > 0) {
         this.morphMeshes.forEach((child) => {

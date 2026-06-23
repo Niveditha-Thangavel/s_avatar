@@ -303,10 +303,11 @@ function renderLoop() {
 
   behavior.update(dt);
 
-  // Pass AudioContext elapsed time so avatar3d._updateFromMatrix stays in sync
   let elapsed = null;
   if (isAudioPlaying && audioContext) {
-    elapsed = audioContext.currentTime - audioStartTime;
+    // Subtract hardware output latency to align lip shapes to speaker output
+    const latency = audioContext.outputLatency || 0.08;
+    elapsed = audioContext.currentTime - audioStartTime - latency;
   }
 
   if (avatar) avatar.render(dt, behavior, elapsed);
