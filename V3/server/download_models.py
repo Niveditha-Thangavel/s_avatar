@@ -20,8 +20,8 @@ CT2_CACHE = os.environ.get(
     os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2"),
 )
 
-_EN_INDIC_MODEL = "ai4bharat/indictrans2-en-indic-1B-ct2"
-_INDIC_EN_MODEL = "ai4bharat/indictrans2-indic-en-1B-ct2"
+_EN_INDIC_MODEL = "adalat-ai/ct2-rotary-indictrans2-en-indic-1B"
+_INDIC_EN_MODEL = "adalat-ai/ct2-rotary-indictrans2-indic-en-1B"
 _EN_INDIC_DST = os.path.join(CT2_CACHE, "en-indic-1B")
 _INDIC_EN_DST = os.path.join(CT2_CACHE, "indic-en-1B")
 
