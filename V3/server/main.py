@@ -12,12 +12,19 @@ Endpoints:
 
 import sys
 
-# Polyfill sys.get_int_max_str_digits if missing (e.g. in some Python 3.11 builds)
+# Polyfill sys.get/set_int_max_str_digits if missing (e.g. in some Python 3.11 builds)
 # to prevent torch._dynamo import failures during startup.
+# Signatures must match the real stdlib functions exactly so that
+# torch._dynamo's @substitute_in_graph decorator doesn't raise TypeError.
 if not hasattr(sys, "get_int_max_str_digits"):
-    sys.get_int_max_str_digits = lambda: 4300
+    def _get_int_max_str_digits() -> int:
+        return 4300
+    sys.get_int_max_str_digits = _get_int_max_str_digits
+
 if not hasattr(sys, "set_int_max_str_digits"):
-    sys.set_int_max_str_digits = lambda x: None
+    def _set_int_max_str_digits(maxdigits: int) -> None:
+        pass
+    sys.set_int_max_str_digits = _set_int_max_str_digits
 
 import json
 import logging

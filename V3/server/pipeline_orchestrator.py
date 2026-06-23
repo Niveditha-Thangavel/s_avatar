@@ -344,17 +344,17 @@ class PipelineOrchestrator:
                 if raw["type"] == "websocket.receive":
                     if raw.get("bytes"):
                         # Forward PCM to Vexyl STT
-                        await vexyl_ws.send_bytes(raw["bytes"])
+                        await vexyl_ws.send(raw["bytes"])
                     elif raw.get("text"):
                         try:
                             msg = json.loads(raw["text"])
                         except json.JSONDecodeError:
                             continue
                         if msg.get("type") == "stop":
-                            await vexyl_ws.send_json({"type": "stop"})
+                            await vexyl_ws.send(json.dumps({"type": "stop"}))
                             break
                         elif msg.get("type") == "cancel":
-                            await vexyl_ws.send_json({"type": "cancel"})
+                            await vexyl_ws.send(json.dumps({"type": "cancel"}))
                             break
         finally:
             try:
