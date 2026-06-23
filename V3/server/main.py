@@ -72,8 +72,19 @@ async def lifespan(app: FastAPI):
     logger.info("[Server] ✅ IndicTrans2 ready")
 
     logger.info("[Server] Initialising LocalTTS engine (k2-fsa/OmniVoice) …")
-    _tts_engine = LocalTTS()
-    logger.info("[Server] ✅ LocalTTS ready")
+    try:
+        _tts_engine = LocalTTS()
+        if _tts_engine.is_ready:
+            logger.info("[Server] ✅ LocalTTS ready")
+        else:
+            logger.warning("[Server] ⚠️  LocalTTS loaded but model is NOT ready — will return silent audio")
+    except Exception as exc:
+        logger.error("[Server] ❌ LocalTTS init failed — pipeline will use silent audio: %s", exc)
+        _tts_engine = LocalTTS.__new__(LocalTTS)
+        _tts_engine.sample_rate = 24000
+        _tts_engine._ready = False
+        _tts_engine.model = None
+
     yield
     logger.info("[Server] Shutdown")
 
@@ -99,7 +110,8 @@ async def health():
             "translator": "loaded" if (_trans_engine and _trans_engine._loaded) else "loading",
             "vexyl_stt": VEXYL_STT_URL,
             "llm": "disabled (using static mock responses)",
-            "tts": "loaded (local omnivoice)" if _tts_engine else "loading",
+            "tts": ("loaded (local omnivoice)" if (_tts_engine and _tts_engine.is_ready)
+                    else "degraded (silent fallback)"),
         },
         "models": {
             "indic_en": INDIC_TRANS2_INDIC_EN,

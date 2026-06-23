@@ -42,8 +42,7 @@ services:
       - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
       - VEXYL_STT_URL=ws://vexyl-stt:8080
-      - INDIC_TRANS2_EN_INDIC=/root/.cache/ctranslate2/nllb-200-distilled-600M
-      - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/nllb-200-distilled-600M
+      - NLLB_MODEL_PATH=/root/.cache/ctranslate2/nllb-200-distilled-600M
       - HF_HOME=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
     depends_on:
@@ -54,7 +53,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      start_period: 300s
     restart: unless-stopped
 
   frontend:

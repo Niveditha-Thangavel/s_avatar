@@ -240,14 +240,14 @@ def extract_blendshapes(
 
     Parameters
     ----------
-    audio_bytes : bytes   — raw float32 PCM, little-endian
+    audio_bytes : bytes   — raw int16 PCM, little-endian (from LocalTTS)
     sample_rate : int     — Hz (expected 24000 from vLLM-Omni)
 
     Returns
     -------
     List[dict] — [{"time": float, "blendshapes": {name: weight}}, ...]
     """
-    audio = np.frombuffer(audio_bytes, dtype=np.float32)
+    audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     if len(audio) == 0:
         return []
 

@@ -41,6 +41,7 @@ RUN python server/download_models.py
 
 # Server source (late copy — doesn't bust model cache layer)
 COPY server/*.py server/
+COPY server/ref_audio.wav server/ref_text.txt server/
 
 ENV PYTHONUNBUFFERED=1
 ENV TOKENIZERS_PARALLELISM=false

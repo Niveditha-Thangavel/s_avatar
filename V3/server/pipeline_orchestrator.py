@@ -3,10 +3,10 @@ pipeline_orchestrator.py — Low-latency S2S pipeline orchestrator
 
 Orchestrates 5 services:
   1. Vexyl STT (WebSocket streaming ASR)
-  2. IndicTrans2 → English (CTranslate2)
-  3. External LLM (OpenAI-compatible /v1/chat/completions)
-  4. IndicTrans2 → Indic (CTranslate2)
-  5. vLLM-Omni TTS (OpenAI-compatible /v1/audio/speech)
+  2. NLLB-200 → English (CTranslate2)
+  3. External LLM (OpenAI-compatible /v1/chat/completions) [currently: static mock]
+  4. NLLB-200 → Indic (CTranslate2)
+  5. OmniVoice TTS (local k2-fsa/OmniVoice inference)
 
 Concurrency model:
   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
