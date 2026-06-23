@@ -13,13 +13,11 @@ case "${1:-help}" in
 
   up)
     echo "=== Starting full S2S stack (1x GPU) ==="
-    echo "Services: vexyl-stt | llm | vllm-omni | orchestrator | frontend"
+    echo "Services: vexyl-stt | orchestrator | frontend"
     docker compose up -d
     echo ""
     echo "Frontend:     http://localhost:3005"
     echo "Orchestrator: http://localhost:8765/health"
-    echo "LLM:          http://localhost:8000/health"
-    echo "TTS:          http://localhost:8091/health"
     echo "STT:          ws://localhost:8080"
     echo ""
     echo "Tail logs:    ./docker-commands.sh logs"
@@ -94,7 +92,7 @@ Commands:
   health          GET /health from orchestrator
   chat [text]     POST /chat translation debug
 
-Services: vexyl-stt, llm, vllm-omni, orchestrator, frontend
+Services: vexyl-stt, orchestrator, frontend
 
 First-time setup:
   1. cp .env.example .env

@@ -36,6 +36,7 @@ from typing import Optional
 
 from server.sentence_buffer import SentenceBuffer
 from server.pantomatrix import extract_blendshapes
+from server.local_tts import LocalTTS
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +48,11 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk-no-key-required")
 LLM_MODEL = os.environ.get("LLM_MODEL", "granite-4.0-nano")
 
-TTS_BASE_URL = os.environ.get("TTS_BASE_URL", "http://localhost:8091/v1")
-TTS_API_KEY = os.environ.get("TTS_API_KEY", "none")
-TTS_MODEL = os.environ.get("TTS_MODEL", "k2-fsa/OmniVoice")
-TTS_VOICE = os.environ.get("TTS_VOICE", "default")
 TTS_SAMPLE_RATE = 24000
+
+# Local TTS placeholder – generates silent PCM for testing
+# The actual model download and inference can be added later.
+
 
 INDIC_TRANS2_EN_INDIC = os.environ.get(
     "INDIC_TRANS2_EN_INDIC",
@@ -295,6 +296,7 @@ class PipelineOrchestrator:
         self._tts_api_key = tts_api_key
         self._tts_model = tts_model
         self._tts_voice = tts_voice
+        self._local_tts = LocalTTS()  # Initialize local TTS stub
         self._trans = trans_engine or IndicTrans2Engine()
 
         # Pipeline queues
@@ -592,11 +594,8 @@ class PipelineOrchestrator:
 
     async def _tts_worker(self, client_ws):
         """
-        Take Indic text, call vLLM-Omni TTS, push audio chunks downstream.
-
-        Uses the OpenAI SDK to call vLLM-Omni's /v1/audio/speech endpoint.
-        Each sentence is generated in its own task so multiple TTS requests
-        can run concurrently (sentence N+1 starts while N is still playing).
+        Take Indic text, generate PCM locally using LocalTTS, push audio chunks downstream.
+        This replaces the previous vLLM-Omni remote call.
         """
         try:
             while not self._cancel.is_set():
@@ -607,123 +606,82 @@ class PipelineOrchestrator:
                 except asyncio.TimeoutError:
                     continue
 
-                # Spawn TTS for this sentence in a separate task
-                task = asyncio.create_task(
-                    self._generate_tts(event, client_ws)
+                t0 = time.monotonic()
+                text = event.indic_text or event.response_text or event.source_text
+
+                # Notify client that TTS for this sentence has started
+                await client_ws.send_json({
+                    "type": "tts_start",
+                    "seq": event.seq,
+                    "text": text,
+                    "lang": self._lang_bcp47,
+                })
+
+                # Generate PCM bytes using local TTS
+                loop = asyncio.get_event_loop()
+                try:
+                    pcm_bytes = await loop.run_in_executor(
+                        None, self._local_tts.generate, text
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[Pipe:%s] TTS seq=%d generation failed: %s",
+                        self._session_id, event.seq, exc,
+                    )
+                    continue
+
+                tts_elapsed = time.monotonic() - t0
+                event.stage_timing["tts_done"] = tts_elapsed
+                logger.info(
+                    "[Pipe:%s] TTS seq=%d generated %d bytes in %.2fs",
+                    self._session_id, event.seq, len(pcm_bytes), tts_elapsed,
                 )
-                self._active_tts_tasks.append(task)
-                # Prune completed tasks
-                self._active_tts_tasks = [
-                    t for t in self._active_tts_tasks if not t.done()
-                ]
+
+                # Split into chunks (e.g., 20ms chunks) for streaming
+                chunk_size = int(TTS_SAMPLE_RATE * 0.02 * 2)  # 16-bit PCM => 2 bytes per sample
+                for i in range(0, len(pcm_bytes), chunk_size):
+                    chunk = pcm_bytes[i:i+chunk_size]
+                    await self._tts_queue.put(TTSChunk(
+                        seq=event.seq,
+                        audio_bytes=chunk,
+                        sample_rate=TTS_SAMPLE_RATE,
+                        is_last=False,
+                    ))
+
+                # Run PantoMatrix in executor (non-blocking)
+                if pcm_bytes and not self._cancel.is_set():
+                    try:
+                        matrix = await loop.run_in_executor(
+                            None, extract_blendshapes, pcm_bytes, TTS_SAMPLE_RATE
+                        )
+                        if matrix:
+                            await client_ws.send_json({
+                                "type": "blendshape_matrix",
+                                "seq": event.seq,
+                                "matrix": matrix,
+                            })
+                            event.stage_timing["panto_done"] = time.monotonic() - t0
+                            logger.info(
+                                "[Pipe:%s] PantoMatrix seq=%d %d frames",
+                                self._session_id, event.seq, len(matrix),
+                            )
+                    except Exception as pex:
+                        logger.warning(
+                            "[Pipe:%s] PantoMatrix seq=%d failed: %s",
+                            self._session_id, event.seq, pex,
+                        )
+
+                # Signal end of this sentence's audio
+                await self._tts_queue.put(TTSChunk(
+                    seq=event.seq,
+                    audio_bytes=b"",
+                    sample_rate=TTS_SAMPLE_RATE,
+                    is_last=True,
+                ))
 
         except asyncio.CancelledError:
             pass
 
-    async def _generate_tts(self, event: SentenceEvent, client_ws):
-        """
-        Generate TTS audio for one sentence via vLLM-Omni (OpenAI-compatible streaming).
-
-        Flow:
-          1. Stream PCM chunks from vLLM-Omni → buffer all bytes + push to audio queue
-          2. After streaming completes, run PantoMatrix in executor (non-blocking)
-          3. Send {type: blendshape_matrix} to client so avatar can lip-sync
-          4. Signal tts_end
-        """
-        import httpx
-
-        t0 = time.monotonic()
-        text = event.indic_text or event.response_text or event.source_text
-        try:
-            # Notify frontend: sentence starting
-            await client_ws.send_json({
-                "type": "tts_start",
-                "seq": event.seq,
-                "text": text,
-                "lang": self._lang_bcp47,
-            })
-
-            # Accumulate all PCM chunks for PantoMatrix after streaming
-            pcm_chunks: list[bytes] = []
-
-            async with httpx.AsyncClient(timeout=60.0) as hc:
-                payload = {
-                    "model": self._tts_model,
-                    "voice": self._tts_voice,
-                    "input": text,
-                    "response_format": "pcm",
-                    "stream": True,
-                }
-                headers = {
-                    "Authorization": f"Bearer {self._tts_api_key}",
-                    "Content-Type": "application/json",
-                }
-                async with hc.stream(
-                    "POST",
-                    f"{self._tts_base_url}/audio/speech",
-                    json=payload,
-                    headers=headers,
-                ) as resp:
-                    resp.raise_for_status()
-                    chunk_count = 0
-                    async for data in resp.aiter_bytes():
-                        if self._cancel.is_set():
-                            break
-                        if data:
-                            pcm_chunks.append(data)
-                            await self._tts_queue.put(TTSChunk(
-                                seq=event.seq,
-                                audio_bytes=data,
-                                sample_rate=TTS_SAMPLE_RATE,
-                                is_last=False,
-                            ))
-                            chunk_count += 1
-
-            tts_elapsed = time.monotonic() - t0
-            event.stage_timing["tts_done"] = tts_elapsed
-            logger.info(
-                "[Pipe:%s] TTS seq=%d %d chunks in %.2fs",
-                self._session_id, event.seq, chunk_count, tts_elapsed,
-            )
-
-            # ── PantoMatrix: run in thread executor so we don't block the event loop ──
-            if pcm_chunks and not self._cancel.is_set():
-                all_pcm = b"".join(pcm_chunks)
-                loop = asyncio.get_event_loop()
-                try:
-                    matrix = await loop.run_in_executor(
-                        None, extract_blendshapes, all_pcm, TTS_SAMPLE_RATE
-                    )
-                    if matrix:
-                        await client_ws.send_json({
-                            "type":   "blendshape_matrix",
-                            "seq":    event.seq,
-                            "matrix": matrix,
-                        })
-                        event.stage_timing["panto_done"] = time.monotonic() - t0
-                        logger.info(
-                            "[Pipe:%s] PantoMatrix seq=%d %d frames",
-                            self._session_id, event.seq, len(matrix),
-                        )
-                except Exception as pex:
-                    logger.warning(
-                        "[Pipe:%s] PantoMatrix seq=%d failed: %s",
-                        self._session_id, event.seq, pex,
-                    )
-
-            # Signal end of this sentence's audio
-            await self._tts_queue.put(TTSChunk(
-                seq=event.seq,
-                audio_bytes=b"",
-                sample_rate=TTS_SAMPLE_RATE,
-                is_last=True,
-            ))
-
-        except Exception as exc:
-            logger.error(
-                "[Pipe:%s] TTS seq=%d failed: %s",
-                self._session_id, event.seq, exc,
-            )
 
     # ── Audio sender ─────────────────────────────────────────────────────────
 

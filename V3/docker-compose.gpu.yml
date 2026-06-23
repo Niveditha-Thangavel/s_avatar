@@ -26,11 +26,3 @@ services:
               count: all
               capabilities: [gpu]
 
-  vllm-omni:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]

@@ -1,14 +1,3 @@
-# Dockerfile.server — S2S Pipeline Orchestrator backend
-# Pipeline: Vexyl STT → IndicTrans2 (CT2 / CUDA) → static-mock → IndicTrans2 (CT2 / CUDA) → vLLM-Omni TTS
-#
-# Build context must be the project root (V3/) — not server/ subdirectory.
-#
-# Build:
-#   docker build -f Dockerfile.server -t avatar-server .
-#
-# Uses nvidia/cuda base so ctranslate2 can run on GPU at runtime.
-# Models are still downloaded and verified on CPU at build time (GPU not
-# available during `docker build`).
 
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
@@ -36,8 +25,12 @@ RUN pip install --no-cache-dir -r server/requirements.txt
 
 # Model cache path (used both at build time and runtime)
 ENV CTRANSLATE2_CACHE=/root/.cache/ctranslate2
+ENV HF_HOME=/root/.cache/huggingface
 
-# Pre-download IndicTrans2 CT2 models at build time.
+ARG HF_TOKEN=""
+ENV HF_TOKEN=$HF_TOKEN
+
+# Pre-download IndicTrans2 CT2 and OmniVoice models at build time.
 # Models are verified on CPU here; at runtime they load on CUDA via TRANSLATION_DEVICE.
 COPY server/__init__.py       server/
 COPY server/download_models.py server/
@@ -51,11 +44,11 @@ ENV TOKENIZERS_PARALLELISM=false
 
 # Default service URLs (override at runtime via docker-compose)
 ENV VEXYL_STT_URL=ws://vexyl-stt:8080
-ENV TTS_BASE_URL=http://vllm-omni:8091/v1
 
 # Device for CTranslate2 translation models.
 # Set to "cuda" in docker-compose.gpu.yml for GPU inference.
 ENV TRANSLATION_DEVICE=cpu
+
 
 EXPOSE 8765
 

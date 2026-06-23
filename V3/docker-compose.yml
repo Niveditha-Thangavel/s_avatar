@@ -49,51 +49,16 @@ services:
       start_period: 60s
     restart: unless-stopped
 
-  # ── 3. vLLM-Omni TTS ─────────────────────────────────────────────────────
-  # Image: vllm/vllm-omni (official, 100K+ pulls on Docker Hub)
-  # Serves k2-fsa/OmniVoice via OpenAI-compatible /v1/audio/speech endpoint.
-  # Requires GPU with at least 8GB VRAM.
-  vllm-omni:
-    image: vllm/vllm-omni:latest
-    container_name: vllm-omni
-    ports:
-      - "8091:8091"
-    command:
-      - "vllm"
-      - "serve"
-      - "k2-fsa/OmniVoice"
-      - "--omni"
-      - "--port"
-      - "8091"
-      - "--host"
-      - "0.0.0.0"
-      - "--trust-remote-code"
-    environment:
-      - HF_HOME=/root/.cache/huggingface
-      - HF_TOKEN=${HF_TOKEN:-}
-    volumes:
-      - huggingface_cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - *gpu-device
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8091/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 120s
-    restart: unless-stopped
-
   # ── 4. S2S Orchestrator ───────────────────────────────────────────────────
   # Built from local Dockerfile.server.
   # Wires: Vexyl STT → IndicTrans2 → LLM → IndicTrans2 → OmniVoice TTS
-  # IndicTrans2 CT2 models are downloaded at build time into the volume.
+  # IndicTrans2 CT2 and OmniVoice models are downloaded at build time into the volume.
   orchestrator:
     build:
       context: .
       dockerfile: Dockerfile.server
+      args:
+        HF_TOKEN: ${HF_TOKEN:-}
     image: avatar-orchestrator:local
     container_name: avatar-orchestrator
     ports:
@@ -102,17 +67,15 @@ services:
       - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
       - VEXYL_STT_URL=ws://vexyl-stt:8080
-      - TTS_BASE_URL=http://vllm-omni:8091/v1
-      - TTS_MODEL=k2-fsa/OmniVoice
-      - TTS_VOICE=${TTS_VOICE:-default}
       - INDIC_TRANS2_EN_INDIC=/root/.cache/ctranslate2/en-indic-1B
       - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/indic-en-1B
+      - HF_HOME=/root/.cache/huggingface
+      - HF_TOKEN=${HF_TOKEN:-}
     volumes:
       - ctranslate2_cache:/root/.cache/ctranslate2
+      - huggingface_cache:/root/.cache/huggingface
     depends_on:
       vexyl-stt:
-        condition: service_healthy
-      vllm-omni:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8765/health"]

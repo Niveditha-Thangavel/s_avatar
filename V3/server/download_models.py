@@ -81,7 +81,7 @@ def main():
         log.info("[2/2] ✅ indic→en already cached at %s", _INDIC_EN_DST)
 
     # ── Smoke test: fail the build loudly if models are broken ──
-    log.info("Verifying models …")
+    log.info("Verifying translation models …")
     ok_en_indic = _verify_model("en→indic", _EN_INDIC_DST)
     ok_indic_en = _verify_model("indic→en", _INDIC_EN_DST)
 
@@ -89,8 +89,19 @@ def main():
         log.error("❌ Model verification failed — aborting build.")
         sys.exit(1)
 
-    log.info("✅ All models ready in %s", CT2_CACHE)
+    # ── 3. OmniVoice TTS Model ──
+    log.info("[3/3] Pre-downloading k2-fsa/OmniVoice TTS model …")
+    try:
+        from huggingface_hub import snapshot_download
+        snapshot_download("k2-fsa/OmniVoice")
+        log.info("  ✅ k2-fsa/OmniVoice TTS model cached successfully.")
+    except Exception as exc:
+        log.error("  ❌ OmniVoice download failed: %s", exc)
+        sys.exit(1)
+
+    log.info("✅ All models ready in cache.")
 
 
 if __name__ == "__main__":
     main()
+

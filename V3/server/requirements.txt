@@ -1,5 +1,5 @@
 # S2S Voice Avatar Server — Python dependencies
-# Stack: Vexyl STT (WebSocket) → IndicTrans2 (CTranslate2) → LLM (OpenAI-compatible) → vLLM-Omni TTS
+# Stack: Vexyl STT (WebSocket) → IndicTrans2 (CTranslate2) → LLM (OpenAI-compatible) → Local OmniVoice TTS
 
 # ── Web server ────────────────────────────────────────────────────────────────
 fastapi==0.115.12
@@ -16,10 +16,12 @@ sentencepiece>=0.2.0
 # ── LLM: OpenAI-compatible HTTP client ───────────────────────────────────────
 httpx>=0.28.0
 
-# ── TTS: vLLM-Omni via OpenAI SDK (streaming audio/speech endpoint) ──────────
-openai>=1.70.0
+# ── TTS: Local OmniVoice via PyTorch ─────────────────────────────────────────
+omnivoice>=0.1.0
+torchaudio
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 numpy==1.26.4
 huggingface-hub>=0.28.0
+
 
