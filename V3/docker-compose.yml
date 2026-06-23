@@ -42,8 +42,8 @@ services:
       - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
       - VEXYL_STT_URL=ws://vexyl-stt:8080
-      - INDIC_TRANS2_EN_INDIC=/root/.cache/ctranslate2/en-indic-1B
-      - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/indic-en-1B
+      - INDIC_TRANS2_EN_INDIC=/root/.cache/ctranslate2/nllb-200-distilled-600M
+      - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/nllb-200-distilled-600M
       - HF_HOME=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
     volumes:

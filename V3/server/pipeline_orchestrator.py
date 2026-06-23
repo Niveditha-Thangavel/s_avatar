@@ -54,14 +54,12 @@ TTS_SAMPLE_RATE = 24000
 # The actual model download and inference can be added later.
 
 
-INDIC_TRANS2_EN_INDIC = os.environ.get(
-    "INDIC_TRANS2_EN_INDIC",
-    os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2", "en-indic-1B"),
+NLLB_MODEL_PATH = os.environ.get(
+    "NLLB_MODEL_PATH",
+    os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2", "nllb-200-distilled-600M"),
 )
-INDIC_TRANS2_INDIC_EN = os.environ.get(
-    "INDIC_TRANS2_INDIC_EN",
-    os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2", "indic-en-1B"),
-)
+INDIC_TRANS2_EN_INDIC = NLLB_MODEL_PATH
+INDIC_TRANS2_INDIC_EN = NLLB_MODEL_PATH
 
 TRANSLATION_DEVICE = os.environ.get("TRANSLATION_DEVICE", "cpu")
 
@@ -135,17 +133,8 @@ def _from_flores(flores: str) -> str:
 
 class IndicTrans2Engine:
     """
-    Wraps two CTranslate2 translators for Indic→English and English→Indic.
-
-    Tokenization uses sentencepiece BPE models shipped with the CT2 model
-    directories. Language prefixes (FLORES codes) are prepended automatically.
-
-    Model directories expected layout:
-      <model_dir>/
-        model.bin
-        config.json
-        vocabulary.json          # or shared_vocabulary.json
-        sentencepiece.model      # BPE tokenizer model
+    Wraps a single NLLB-200 CTranslate2 translator for bidirectional
+    translation (English <-> Indic) to save memory and run faster.
     """
 
     def __init__(
@@ -154,90 +143,38 @@ class IndicTrans2Engine:
         indic_en_path: str = INDIC_TRANS2_INDIC_EN,
         device: str = "cpu",
     ):
-        self._en_indic_path = en_indic_path
-        self._indic_en_path = indic_en_path
+        # Both paths point to the same NLLB model folder
+        self._model_path = en_indic_path
         self._device = device
-        self._en_indic: Optional["ctranslate2.Translator"] = None
-        self._indic_en: Optional["ctranslate2.Translator"] = None
-        
-        self._sp_en_indic_src: Optional["sentencepiece.SentencePieceProcessor"] = None
-        self._sp_en_indic_tgt: Optional["sentencepiece.SentencePieceProcessor"] = None
-        self._sp_indic_en_src: Optional["sentencepiece.SentencePieceProcessor"] = None
-        self._sp_indic_en_tgt: Optional["sentencepiece.SentencePieceProcessor"] = None
-        
+        self._translator: Optional["ctranslate2.Translator"] = None
+        self._sp: Optional["sentencepiece.SentencePieceProcessor"] = None
         self._lock = asyncio.Lock()
         self._loaded = False
 
     async def load(self):
-        """Load both models (idempotent, thread-safe)."""
+        """Load NLLB model and tokenizer (idempotent, thread-safe)."""
         if self._loaded:
             return
         async with self._lock:
             if self._loaded:
                 return
             logger.info(
-                "[IndicTrans2] Loading en→indic from %s", self._en_indic_path
-            )
-            logger.info(
-                "[IndicTrans2] Loading indic→en from %s", self._indic_en_path
+                "[NLLB-200] Loading model from %s on %s", self._model_path, self._device
             )
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._load_sync)
             self._loaded = True
-            logger.info("[IndicTrans2] Both models ready on %s", self._device)
+            logger.info("[NLLB-200] Model ready")
 
     def _load_sync(self):
         import ctranslate2
         import sentencepiece as spm
 
-        # ── English → Indic ──
-        self._sp_en_indic_src = spm.SentencePieceProcessor()
-        self._sp_en_indic_tgt = spm.SentencePieceProcessor()
-        
-        sp_src_path = os.path.join(self._en_indic_path, "vocab", "model.SRC")
-        sp_tgt_path = os.path.join(self._en_indic_path, "vocab", "model.TGT")
-        
-        if os.path.exists(sp_src_path) and os.path.exists(sp_tgt_path):
-            self._sp_en_indic_src.load(sp_src_path)
-            self._sp_en_indic_tgt.load(sp_tgt_path)
-        else:
-            sp_path = os.path.join(self._en_indic_path, "sentencepiece.model")
-            if os.path.exists(sp_path):
-                self._sp_en_indic_src.load(sp_path)
-                self._sp_en_indic_tgt.load(sp_path)
-            else:
-                logger.warning(
-                    "[IndicTrans2] Tokenizer files not found in %s; using dummy",
-                    self._en_indic_path,
-                )
-
-        self._en_indic = ctranslate2.Translator(
-            self._en_indic_path, device=self._device
-        )
-
-        # ── Indic → English ──
-        self._sp_indic_en_src = spm.SentencePieceProcessor()
-        self._sp_indic_en_tgt = spm.SentencePieceProcessor()
-        
-        sp_src_path = os.path.join(self._indic_en_path, "vocab", "model.SRC")
-        sp_tgt_path = os.path.join(self._indic_en_path, "vocab", "model.TGT")
-        
-        if os.path.exists(sp_src_path) and os.path.exists(sp_tgt_path):
-            self._sp_indic_en_src.load(sp_src_path)
-            self._sp_indic_en_tgt.load(sp_tgt_path)
-        else:
-            sp_path = os.path.join(self._indic_en_path, "sentencepiece.model")
-            if os.path.exists(sp_path):
-                self._sp_indic_en_src.load(sp_path)
-                self._sp_indic_en_tgt.load(sp_path)
-            else:
-                logger.warning(
-                    "[IndicTrans2] Tokenizer files not found in %s; using dummy",
-                    self._indic_en_path,
-                )
-
-        self._indic_en = ctranslate2.Translator(
-            self._indic_en_path, device=self._device
+        self._sp = spm.SentencePieceProcessor()
+        # NLLB BPE model file name
+        self._sp.load(os.path.join(self._model_path, "sentencepiece.bpe.model"))
+        self._translator = ctranslate2.Translator(
+            self._model_path, device=self._device
         )
 
     async def indic_to_eng(self, text: str, src_lang: str) -> str:
@@ -252,19 +189,8 @@ class IndicTrans2Engine:
         await self.load()
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, self._indic_to_eng_sync, text, src_lang
+            None, self._translate_sync, text, src_lang, "eng_Latn"
         )
-
-    def _indic_to_eng_sync(self, text: str, src_lang: str) -> str:
-        # Prepend source language token
-        prefixed = f"__{src_lang}__ {text}"
-        tokens = self._sp_indic_en_src.encode(prefixed, out_type=str)
-        results = self._indic_en.translate_batch(
-            [tokens], beam_size=4, max_batch_size=1
-        )
-        decoded = self._sp_indic_en_tgt.decode(results[0].tokens)
-        # Strip any residual language tags
-        return decoded.replace("__eng_Latn__", "").strip()
 
     async def eng_to_indic(self, text: str, tgt_lang: str) -> str:
         """
@@ -278,18 +204,26 @@ class IndicTrans2Engine:
         await self.load()
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, self._eng_to_indic_sync, text, tgt_lang
+            None, self._translate_sync, text, "eng_Latn", tgt_lang
         )
 
-    def _eng_to_indic_sync(self, text: str, tgt_lang: str) -> str:
-        prefixed = f"__eng_Latn__ {text}"
-        tokens = self._sp_en_indic_src.encode(prefixed, out_type=str)
-        results = self._en_indic.translate_batch(
-            [tokens], beam_size=4, max_batch_size=1,
-            target_prefix=[[f"__{tgt_lang}__"]],
+    def _translate_sync(self, text: str, src_lang: str, tgt_lang: str) -> str:
+        # Prepend source language token, append EOS token
+        subwords = self._sp.encode(text, out_type=str)
+        source_tokens = [src_lang] + subwords + ["</s>"]
+
+        # Translate with target language prefix
+        results = self._translator.translate_batch(
+            [source_tokens],
+            target_prefix=[[tgt_lang]],
+            beam_size=4,
+            max_batch_size=1,
         )
-        decoded = self._sp_en_indic_tgt.decode(results[0].tokens)
-        return decoded.replace(f"__{tgt_lang}__", "").strip()
+        output_tokens = results[0].hypotheses[0]
+
+        # Decode, skipping target language prefix token
+        decoded = self._sp.decode(output_tokens[1:])
+        return decoded.strip()
 
 
 # ── Pipeline Orchestrator ──────────────────────────────────────────────────────
