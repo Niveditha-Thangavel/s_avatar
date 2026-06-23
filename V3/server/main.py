@@ -37,6 +37,7 @@ from server.pipeline_orchestrator import (
     TTS_VOICE,
     INDIC_TRANS2_EN_INDIC,
     INDIC_TRANS2_INDIC_EN,
+    TRANSLATION_DEVICE,
 )
 
 logging.basicConfig(
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI):
     _trans_engine = IndicTrans2Engine(
         en_indic_path=INDIC_TRANS2_EN_INDIC,
         indic_en_path=INDIC_TRANS2_INDIC_EN,
+        device=TRANSLATION_DEVICE,
     )
     await _trans_engine.load()
     logger.info("[Server] ✅ IndicTrans2 ready")
@@ -85,13 +87,13 @@ async def health():
         "services": {
             "translator": "loaded" if (_trans_engine and _trans_engine._loaded) else "loading",
             "vexyl_stt": VEXYL_STT_URL,
-            "llm": f"{LLM_BASE_URL}/chat/completions",
+            "llm": "disabled (using static mock responses)",
             "tts": f"{TTS_BASE_URL}/audio/speech",
         },
         "models": {
             "indic_en": INDIC_TRANS2_INDIC_EN,
             "en_indic": INDIC_TRANS2_EN_INDIC,
-            "llm": LLM_MODEL,
+            "llm": "disabled",
             "tts": TTS_MODEL,
         },
     }

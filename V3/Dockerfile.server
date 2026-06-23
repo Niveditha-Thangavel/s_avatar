@@ -1,44 +1,61 @@
 # Dockerfile.server — S2S Pipeline Orchestrator backend
-# Pipeline: Vexyl STT → IndicTrans2 (CT2) → LLM → IndicTrans2 (CT2) → vLLM-Omni TTS
+# Pipeline: Vexyl STT → IndicTrans2 (CT2 / CUDA) → static-mock → IndicTrans2 (CT2 / CUDA) → vLLM-Omni TTS
 #
 # Build context must be the project root (V3/) — not server/ subdirectory.
 #
 # Build:
 #   docker build -f Dockerfile.server -t avatar-server .
+#
+# Uses nvidia/cuda base so ctranslate2 can run on GPU at runtime.
+# Models are still downloaded and verified on CPU at build time (GPU not
+# available during `docker build`).
 
-FROM python:3.11-slim
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
+ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
 # System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
     build-essential \
     gcc \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python
 
-# Python deps (no PyTorch needed — CTranslate2 only)
+# Upgrade pip
+RUN pip install --no-cache-dir --upgrade pip
+
+# Python deps
 COPY server/requirements.txt server/
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# Model cache path
+# Model cache path (used both at build time and runtime)
 ENV CTRANSLATE2_CACHE=/root/.cache/ctranslate2
 
-# Pre-download IndicTrans2 CT2 models at build time
-COPY server/__init__.py      server/
+# Pre-download IndicTrans2 CT2 models at build time.
+# Models are verified on CPU here; at runtime they load on CUDA via TRANSLATION_DEVICE.
+COPY server/__init__.py       server/
 COPY server/download_models.py server/
 RUN python server/download_models.py
 
 # Server source (late copy — doesn't bust model cache layer)
-COPY server/*.py      server/
+COPY server/*.py server/
 
 ENV PYTHONUNBUFFERED=1
 ENV TOKENIZERS_PARALLELISM=false
 
-# External service URLs (override at runtime)
+# Default service URLs (override at runtime via docker-compose)
 ENV VEXYL_STT_URL=ws://vexyl-stt:8080
-ENV LLM_BASE_URL=http://llm:8000/v1
 ENV TTS_BASE_URL=http://vllm-omni:8091/v1
+
+# Device for CTranslate2 translation models.
+# Set to "cuda" in docker-compose.gpu.yml for GPU inference.
+ENV TRANSLATION_DEVICE=cpu
 
 EXPOSE 8765
 

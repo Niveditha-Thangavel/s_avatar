@@ -26,6 +26,7 @@ Key latency strategies:
 """
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -60,6 +61,20 @@ INDIC_TRANS2_INDIC_EN = os.environ.get(
     "INDIC_TRANS2_INDIC_EN",
     os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2", "indic-en-1B"),
 )
+
+TRANSLATION_DEVICE = os.environ.get("TRANSLATION_DEVICE", "cpu")
+
+# ── Static responses for local testing ────────────────────────────────────────
+_STATIC_RESPONSES = [
+    "Hello! I am your voice avatar. How can I help you today?",
+    "That is a really interesting question. Let me think about it.",
+    "I understand. I am here to assist you with whatever you need.",
+    "I am so sorry to hear that. I hope things improve soon.",
+    "That is completely unacceptable! I will make sure this is fixed.",
+    "Please do not worry. Everything will be just fine."
+]
+_static_response_cycle = itertools.cycle(_STATIC_RESPONSES)
+
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -237,9 +252,11 @@ class IndicTrans2Engine:
     def _eng_to_indic_sync(self, text: str, tgt_lang: str) -> str:
         prefixed = f"__eng_Latn__ {text}"
         tokens = self._sp_en_indic.encode(prefixed, out_type=str)
+        # BUG FIX: target_prefix must be an f-string so tgt_lang is interpolated
+        # e.g. [["__hin_Deva__"]] not [["__{tgt_lang}__"]]
         results = self._en_indic.translate_batch(
             [tokens], beam_size=4, max_batch_size=1,
-            target_prefix=[["__{tgt_lang}__"]],
+            target_prefix=[[f"__{tgt_lang}__"]],
         )
         decoded = self._sp_en_indic.decode(results[0].tokens)
         return decoded.replace(f"__{tgt_lang}__", "").strip()
@@ -528,10 +545,7 @@ class PipelineOrchestrator:
     # ── Stage 3: LLM ────────────────────────────────────────────────────────
 
     async def _llm_worker(self):
-        """Take English sentences, call LLM, push response downstream."""
-        import httpx
-
-        client = httpx.AsyncClient(base_url=self._llm_base_url, timeout=30.0)
+        """Take English sentences, use a static test response, push downstream."""
         try:
             while not self._cancel.is_set():
                 try:
@@ -542,50 +556,13 @@ class PipelineOrchestrator:
                     continue
 
                 t0 = time.monotonic()
-                try:
-                    payload = {
-                        "model": self._llm_model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You are a helpful assistant. Respond in "
-                                    "English concisely (1-3 sentences)."
-                                ),
-                            },
-                            {"role": "user", "content": event.english_text},
-                        ],
-                        "temperature": 0.7,
-                        "max_tokens": 256,
-                    }
-                    resp = await client.post(
-                        "/chat/completions",
-                        json=payload,
-                        headers={
-                            "Authorization": f"Bearer {self._llm_api_key}",
-                        },
-                    )
-                    resp.raise_for_status()
-                    body = resp.json()
-                    event.response_text = (
-                        body.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[Pipe:%s] LLM call failed: %s", self._session_id, exc
-                    )
-                    event.response_text = (
-                        "I couldn't process that. Could you repeat?"
-                    )
+                resp_text = next(_static_response_cycle)
+                event.response_text = f"{resp_text} (You said: {event.english_text})"
                 event.stage_timing["llm_done"] = time.monotonic() - t0
                 await self._response_queue.put(event)
 
         except asyncio.CancelledError:
             pass
-        finally:
-            await client.aclose()
 
     # ── Stage 4: English → Indic Translation ────────────────────────────────
 

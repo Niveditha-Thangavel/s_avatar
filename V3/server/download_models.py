@@ -10,15 +10,11 @@ Cache path: ~/.cache/ctranslate2/{en-indic-1B, indic-en-1B}
 
 import logging
 import os
-import shutil
+import sys
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("download_models")
 
-HF_CACHE = os.environ.get(
-    "TRANSFORMERS_CACHE",
-    os.path.join(os.path.expanduser("~"), ".cache", "huggingface"),
-)
 CT2_CACHE = os.environ.get(
     "CTRANSLATE2_CACHE",
     os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2"),
@@ -35,13 +31,36 @@ def _download_ct2(hf_repo: str, dst_dir: str):
     from huggingface_hub import hf_hub_download, list_repo_files
 
     os.makedirs(dst_dir, exist_ok=True)
-    files = list_repo_files(hf_repo)
-    for fname in files:
-        if fname.startswith("."):
-            continue
+    files = list(list_repo_files(hf_repo))
+    visible_files = [f for f in files if not f.startswith(".")]
+    for fname in visible_files:
         log.info("  Downloading %s …", fname)
-        hf_hub_download(hf_repo, filename=fname, local_dir=dst_dir, local_dir_use_symlinks=False)
-    log.info("  ✅ %d files in %s", len([f for f in files if not f.startswith(".")]), dst_dir)
+        # NOTE: local_dir_use_symlinks removed — deprecated in huggingface_hub>=0.23
+        hf_hub_download(hf_repo, filename=fname, local_dir=dst_dir)
+    log.info("  ✅ %d files downloaded to %s", len(visible_files), dst_dir)
+
+
+def _verify_model(name: str, path: str) -> bool:
+    """Verify a model directory is loadable. Returns True on success."""
+    try:
+        import ctranslate2
+        import sentencepiece as spm
+
+        sp_path = os.path.join(path, "sentencepiece.model")
+        if os.path.exists(sp_path):
+            sp = spm.SentencePieceProcessor()
+            sp.load(sp_path)
+            log.info("  %s tokenizer OK (%d vocab)", name, sp.vocab_size())
+        else:
+            log.warning("  %s: sentencepiece.model not found at %s", name, sp_path)
+
+        # Always verify on CPU at build time — GPU not available during build
+        t = ctranslate2.Translator(path, device="cpu")
+        log.info("  %s model OK (device=%s)", name, t.device)
+        return True
+    except Exception as exc:
+        log.error("  %s verification FAILED: %s", name, exc)
+        return False
 
 
 def main():
@@ -61,22 +80,14 @@ def main():
     else:
         log.info("[2/2] ✅ indic→en already cached at %s", _INDIC_EN_DST)
 
-    # Quick smoke test
+    # ── Smoke test: fail the build loudly if models are broken ──
     log.info("Verifying models …")
-    try:
-        import ctranslate2
-        import sentencepiece as spm
+    ok_en_indic = _verify_model("en→indic", _EN_INDIC_DST)
+    ok_indic_en = _verify_model("indic→en", _INDIC_EN_DST)
 
-        for name, path in [("indic→en", _INDIC_EN_DST), ("en→indic", _EN_INDIC_DST)]:
-            sp = spm.SentencePieceProcessor()
-            sp_path = os.path.join(path, "sentencepiece.model")
-            if os.path.exists(sp_path):
-                sp.load(sp_path)
-                log.info("  %s tokenizer OK (%d vocab)", name, sp.vocab_size())
-            t = ctranslate2.Translator(path, device="cpu")
-            log.info("  %s model OK (%s)", name, t.device)
-    except Exception as exc:
-        log.error("Verification failed: %s", exc)
+    if not (ok_en_indic and ok_indic_en):
+        log.error("❌ Model verification failed — aborting build.")
+        sys.exit(1)
 
     log.info("✅ All models ready in %s", CT2_CACHE)
 

@@ -5,9 +5,8 @@
 #
 # Services:
 #   vexyl-stt   — Indic STT  (built from ghcr.io/vexyl-ai/vexyl-stt)
-#   llm         — LLM brain  (vllm/vllm-openai serving granite-4.0-nano)
 #   vllm-omni   — TTS        (vllm/vllm-omni serving k2-fsa/OmniVoice)
-#   orchestrator— Python S2S orchestrator (built locally)
+#   orchestrator— Python S2S orchestrator (built locally, using static mock responses for LLM)
 #   frontend    — Nginx + Vite build
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -43,43 +42,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
-    restart: unless-stopped
-
-  # ── 2. LLM (vLLM OpenAI-compatible) ──────────────────────────────────────
-  # Image: vllm/vllm-openai (official, 10M+ pulls)
-  # Serves Granite 4.0 Nano — change LLM_MODEL env to swap models.
-  # Requires GPU. For CPU-only testing, replace with a lighter model or mock.
-  llm:
-    image: vllm/vllm-openai:latest
-    container_name: avatar-llm
-    ports:
-      - "8000:8000"
-    command:
-      - "--model"
-      - "${LLM_MODEL:-ibm-granite/granite-4.0-nano}"
-      - "--port"
-      - "8000"
-      - "--host"
-      - "0.0.0.0"
-      - "--trust-remote-code"
-      - "--api-key"
-      - "${LLM_API_KEY:-sk-no-key-required}"
-    environment:
-      - HF_HOME=/root/.cache/huggingface
-      - HF_TOKEN=${HF_TOKEN:-}
-    volumes:
-      - huggingface_cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - *gpu-device
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 120s
     restart: unless-stopped
 
   # ── 3. vLLM-Omni TTS ─────────────────────────────────────────────────────
@@ -135,9 +97,6 @@ services:
       - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
       - VEXYL_STT_URL=ws://vexyl-stt:8080
-      - LLM_BASE_URL=http://llm:8000/v1
-      - LLM_API_KEY=${LLM_API_KEY:-sk-no-key-required}
-      - LLM_MODEL=${LLM_MODEL:-ibm-granite/granite-4.0-nano}
       - TTS_BASE_URL=http://vllm-omni:8091/v1
       - TTS_MODEL=k2-fsa/OmniVoice
       - TTS_VOICE=${TTS_VOICE:-default}
@@ -147,8 +106,6 @@ services:
       - ctranslate2_cache:/root/.cache/ctranslate2
     depends_on:
       vexyl-stt:
-        condition: service_healthy
-      llm:
         condition: service_healthy
       vllm-omni:
         condition: service_healthy

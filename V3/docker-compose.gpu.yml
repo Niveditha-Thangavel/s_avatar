@@ -3,11 +3,21 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
-# Gives all available GPUs to both the LLM and TTS services.
-# The orchestrator (IndicTrans2 via CTranslate2) runs CPU-only — no GPU needed.
+# Gives all available GPUs to all GPU-capable services (STT, translation engine, and TTS).
 
 services:
-  llm:
+  vexyl-stt:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  orchestrator:
+    environment:
+      - TRANSLATION_DEVICE=cuda
     deploy:
       resources:
         reservations:
