@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Avatar Widget Demo</title>
+  <title>Avatar Widget Demo — S2S + PantoMatrix</title>
 
-  <!-- Importmap: required for Three.js CDN loading -->
   <script type="importmap">
   {
     "imports": {
@@ -18,12 +17,7 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; background: #0a0f1e; color: #fff; }
-
-    /* ── Your existing app layout ── */
-    .app-layout {
-      display: flex;
-      height: 100vh;
-    }
+    .app-layout { display: flex; height: 100vh; }
 
     .chat-sidebar {
       width: 380px;
@@ -32,258 +26,292 @@
       padding: 20px;
       display: flex;
       flex-direction: column;
-    }
-
-    .chat-sidebar h2 {
-      font-size: 18px;
-      margin-bottom: 16px;
-      color: #00e676;
-    }
-
-    .chat-messages {
-      flex: 1;
+      gap: 14px;
       overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      margin-bottom: 16px;
     }
+    .chat-sidebar h2 { font-size: 18px; color: #00e676; }
+    .chat-sidebar p  { font-size: 13px; color: #aaa; line-height: 1.5; }
+    code { background: rgba(0,230,118,0.1); color: #00e676; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    label { font-size: 12px; color: #aaa; display: block; margin-bottom: 4px; }
 
-    .msg {
-      padding: 10px 14px;
-      border-radius: 12px;
-      font-size: 14px;
-      line-height: 1.4;
+    button {
+      padding: 10px 18px; border-radius: 10px; border: none;
+      background: #00e676; color: #000; font-weight: 600;
+      font-size: 14px; cursor: pointer; transition: opacity 0.2s;
     }
-    .msg.user { background: rgba(0,230,118,0.12); align-self: flex-end; }
-    .msg.avatar { background: rgba(255,255,255,0.06); align-self: flex-start; }
-
-    .chat-input-row {
-      display: flex;
-      gap: 8px;
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.secondary {
+      background: rgba(255,255,255,0.08); color: #fff;
+      border: 1px solid rgba(255,255,255,0.15);
     }
-    .chat-input-row input {
-      flex: 1;
-      padding: 10px 14px;
-      border-radius: 10px;
+    select {
+      width: 100%; padding: 9px 12px; border-radius: 9px;
       border: 1px solid rgba(255,255,255,0.12);
-      background: rgba(0,0,0,0.3);
-      color: #fff;
-      font-size: 14px;
-      outline: none;
+      background: rgba(0,0,0,0.3); color: #fff; font-size: 14px;
     }
-    .chat-input-row input:focus { border-color: #00e676; }
-    .chat-input-row button {
-      padding: 10px 16px;
-      border-radius: 10px;
-      border: none;
-      background: #00e676;
-      color: #000;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .chat-input-row button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
 
-    /* ── Avatar container (right panel) ── */
+    .log-box {
+      flex: 1; min-height: 80px; max-height: 200px;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px; padding: 10px;
+      font-size: 12px; font-family: monospace;
+      overflow-y: auto; color: #ccc;
+    }
+    .log-box .line { margin-bottom: 4px; }
+    .log-box .transcript { color: #00e676; }
+    .log-box .tts        { color: #82b1ff; }
+    .log-box .err        { color: #ff5252; }
+
     .avatar-panel {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
+      flex: 1; position: relative;
       background: radial-gradient(circle at center, #182036 0%, #0a0f1e 100%);
     }
-
-    #avatar-container {
-      width: 100%;
-      height: 100%;
-      min-height: 500px;
-    }
-
+    #avatar-container { width: 100%; height: 100%; }
     .status-bar {
-      position: absolute;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      padding: 8px 20px;
-      border-radius: 20px;
-      background: rgba(0,0,0,0.6);
-      font-size: 13px;
-      color: #aaa;
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      padding: 8px 20px; border-radius: 20px; background: rgba(0,0,0,0.6);
+      font-size: 13px; color: #aaa; white-space: nowrap;
     }
   </style>
 </head>
 <body>
 
-  <div class="app-layout">
-    <!-- Left: Chat UI (your existing app) -->
-    <div class="chat-sidebar">
-      <h2>💬 Chat</h2>
-      <div class="chat-messages" id="chat-messages">
-        <div class="msg avatar">Hello! I'm your 3D avatar assistant.</div>
-      </div>
-      <div class="chat-input-row">
-        <input type="text" id="chat-input" placeholder="Type a message..." />
-        <button id="btn-send">Send</button>
-      </div>
-      <div style="margin-top:12px; display:flex; gap:8px;">
-        <select id="emotion-select" style="flex:1; padding:8px; border-radius:8px; background:rgba(0,0,0,0.3); color:#fff; border:1px solid rgba(255,255,255,0.12);">
-          <option value="neutral">😐 Neutral</option>
-          <option value="happy">😊 Happy</option>
-          <option value="sad">😢 Sad</option>
-          <option value="angry">😠 Angry</option>
-          <option value="surprised">😲 Surprised</option>
-        </select>
+<div class="app-layout">
+
+  <!-- Left: Controls -->
+  <div class="chat-sidebar">
+    <div>
+      <h2>🎙️ S2S Avatar Widget</h2>
+      <p>Embeds <code>AvatarWidget</code> with full PantoMatrix lip-sync and emotion system.
+         Voice flows through <code>/ws/s2s</code>: Vexyl STT → IndicTrans2 → LLM → OmniVoice.</p>
+    </div>
+
+    <div>
+      <label for="lang-select">Indic Language</label>
+      <select id="lang-select">
+        <option value="hi-IN">Hindi (hi-IN)</option>
+        <option value="bn-IN">Bengali (bn-IN)</option>
+        <option value="gu-IN">Gujarati (gu-IN)</option>
+        <option value="kn-IN">Kannada (kn-IN)</option>
+        <option value="ml-IN">Malayalam (ml-IN)</option>
+        <option value="mr-IN">Marathi (mr-IN)</option>
+        <option value="pa-IN">Punjabi (pa-IN)</option>
+        <option value="ta-IN">Tamil (ta-IN)</option>
+        <option value="te-IN">Telugu (te-IN)</option>
+        <option value="ur-IN">Urdu (ur-IN)</option>
+      </select>
+    </div>
+
+    <div class="btn-row">
+      <button id="btn-start">🎤 Start</button>
+      <button id="btn-stop" class="secondary" disabled>⏹ Stop</button>
+    </div>
+
+    <div>
+      <label for="emotion-select">Idle Emotion</label>
+      <select id="emotion-select">
+        <option value="neutral">😐 Neutral</option>
+        <option value="happy" selected>😊 Happy</option>
+        <option value="sad">😢 Sad</option>
+        <option value="angry">😠 Angry</option>
+        <option value="surprised">😲 Surprised</option>
+      </select>
+    </div>
+
+    <div>
+      <label>Pipeline Log</label>
+      <div class="log-box" id="log-box">
+        <div class="line">Waiting for session…</div>
       </div>
     </div>
 
-    <!-- Right: Avatar (drop-in widget) -->
-    <div class="avatar-panel" style="position:relative;">
-      <div id="avatar-container"></div>
-      <div class="status-bar" id="status-bar">Avatar loading…</div>
-    </div>
+    <p style="font-size:11px;color:#555;margin-top:auto;">
+      Server: <code>ws://localhost:8765/ws/s2s</code>
+    </p>
   </div>
 
-  <!-- Load the widget -->
-  <script type="module">
-    import { AvatarWidget } from './avatar-widget.js';
+  <!-- Right: 3D Avatar -->
+  <div class="avatar-panel">
+    <div id="avatar-container"></div>
+    <div class="status-bar" id="status-bar">Avatar loading…</div>
+  </div>
+</div>
 
-    // ── 1. Create the avatar ──────────────────────────────────────────────
-    const widget = new AvatarWidget({
-      container: document.getElementById('avatar-container'),
-      modelUrl: 'public/avatar_head.glb',
-      serverUrl: 'http://localhost:8765',  // your backend
-      onReady: () => {
-        document.getElementById('status-bar').textContent = '● Avatar ready';
+<script type="module">
+  import { AvatarWidget } from './avatar-widget.js';
+
+  const WS_BASE = window.location.origin.replace(/^http/, 'ws');
+  const S2S_URL = `${WS_BASE}/ws/s2s`;
+
+  // ── 1. Create avatar widget (keeps full PantoMatrix + emotion support) ──────
+  const widget = new AvatarWidget({
+    container: document.getElementById('avatar-container'),
+    modelUrl:  'public/avatar_head.glb',
+    onReady:   () => setStatus('● Avatar ready'),
+  });
+
+  // ── 2. Logging helpers ───────────────────────────────────────────────────────
+  function log(text, cls = '') {
+    const box  = document.getElementById('log-box');
+    const line = document.createElement('div');
+    line.className = `line ${cls}`;
+    line.textContent = text;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+  function setStatus(text) { document.getElementById('status-bar').textContent = text; }
+
+  // ── 3. S2S session state ─────────────────────────────────────────────────────
+  let ws=null, audioCtx=null, nextPlayAt=0, micStream=null, workletNode=null;
+  let isRunning=false, pendingMeta=null;
+
+  // Audio buffering: wait for server-side PantoMatrix before playback
+  const MATRIX_TIMEOUT_MS=500;
+  let _bufChunks=[];           // [{f32:Float32Array, sampleRate:number}]
+  let _bufTimer=null;          // setTimeout handle
+  let _isAudioPlaying=false;
+
+  const ensureACtx=()=>{
+    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    if(audioCtx.state==='suspended') audioCtx.resume();
+    return audioCtx;
+  };
+
+  function _flushPendingAudio(reason) {
+    if(_bufTimer) { clearTimeout(_bufTimer); _bufTimer=null; }
+    if(_bufChunks.length===0) return;
+    console.log(`[Widget] Flush ${_bufChunks.length} chunks (reason=${reason})`);
+    for(const c of _bufChunks) {
+      const ctx=ensureACtx();
+      const buf=ctx.createBuffer(1,c.f32.length,c.sampleRate);
+      buf.getChannelData(0).set(c.f32);
+      const src=ctx.createBufferSource(); src.buffer=buf; src.connect(ctx.destination);
+      if(nextPlayAt<ctx.currentTime) nextPlayAt=ctx.currentTime;
+      if(!_isAudioPlaying) { _isAudioPlaying=true; }
+      src.start(nextPlayAt); nextPlayAt+=buf.duration;
+    }
+    _bufChunks=[];
+  }
+
+  // ── 5. Start session ─────────────────────────────────────────────────────────
+  async function startSession() {
+    if (isRunning) return;
+    isRunning=true; pendingMeta=null; nextPlayAt=0; _bufChunks=[];
+    ensureACtx();
+
+    ws=new WebSocket(S2S_URL); ws.binaryType='arraybuffer';
+    await new Promise((res,rej)=>{ws.onopen=()=>res();ws.onerror=()=>rej(new Error('WS failed'));});
+
+    const lang=document.getElementById('lang-select').value;
+    ws.send(JSON.stringify({type:'start',lang,session_id:`demo_${Date.now()}`}));
+    ws.onmessage=handleMessage;
+    ws.onclose=()=>{isRunning=false;teardownMic();setStatus('● Idle');updateBtns(false);};
+    ws.onerror=()=>log('WebSocket error','err');
+
+    try {
+      micStream=await navigator.mediaDevices.getUserMedia({audio:{sampleRate:{ideal:16000},channelCount:1,echoCancellation:true,noiseSuppression:true},video:false});
+    } catch(err) { log(`Mic: ${err.message}`,'err'); stopSession(); return; }
+
+    const mCtx=new AudioContext({sampleRate:16000});
+    const code=`class P extends AudioWorkletProcessor{process(i){const c=i[0]?.[0];if(!c)return true;const b=new Int16Array(c.length);for(let i=0;i<c.length;i++){const s=Math.max(-1,Math.min(1,c[i]));b[i]=s<0?s*0x8000:s*0x7FFF;}this.port.postMessage(b.buffer,[b.buffer]);return true;}}registerProcessor('pp',P);`;
+    const u=URL.createObjectURL(new Blob([code],{type:'application/javascript'}));
+    await mCtx.audioWorklet.addModule(u); URL.revokeObjectURL(u);
+    const src=mCtx.createMediaStreamSource(micStream);
+    workletNode=new AudioWorkletNode(mCtx,'pp');
+    workletNode.port.onmessage=e=>{if(ws?.readyState===WebSocket.OPEN) ws.send(e.data);};
+    src.connect(workletNode);
+
+    setStatus('🎤 Listening…');
+    log(`Session started — lang: ${lang}`,'transcript');
+    updateBtns(true);
+  }
+
+  function stopSession() {
+    if(ws?.readyState===WebSocket.OPEN) ws.send(JSON.stringify({type:'stop'}));
+    teardownMic(); isRunning=false; updateBtns(false); setStatus('⏳ Processing…');
+  }
+
+  function teardownMic() {
+    if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null;}
+    workletNode=null;
+  }
+
+  // ── 6. Handle server messages ────────────────────────────────────────────────
+  function handleMessage(evt) {
+    if (evt.data instanceof ArrayBuffer) {
+      if (!pendingMeta) return;
+      const {seq, sample_rate}=pendingMeta; pendingMeta=null;
+
+      const f32=new Float32Array(evt.data);
+      _bufChunks.push({f32, sampleRate:sample_rate});
+
+      // Start flush timeout on first chunk
+      if(!_bufTimer) {
+        _bufTimer=setTimeout(()=>_flushPendingAudio('timeout'), MATRIX_TIMEOUT_MS);
       }
-    });
-
-    // ── 2. Drive lipsync from your PantoMatrix data ───────────────────────
-    // Example: call this when you receive animation_matrix from the server
-    function onAnimationReceived(matrix) {
-      widget.setAnimationMatrix(matrix);
-      document.getElementById('status-bar').textContent = '🔊 Speaking…';
+      return;
     }
 
-    // When speech is done
-    function onSpeechEnd() {
-      widget.clearAnimation();
-      document.getElementById('status-bar').textContent = '● Idle';
-    }
+    let msg; try{msg=JSON.parse(evt.data);}catch{return;}
 
-    // ── 3. Example: send text to backend, get audio + matrix ─────────────
-    async function speakText(text) {
-      if (!text.trim()) return;
+    switch(msg.type) {
+      case 'transcript':
+        log(`🎤 ${msg.text}`,'transcript');
+        setStatus('💬 Transcribed — pipeline running…');
+        break;
 
-      document.getElementById('status-bar').textContent = '⏳ Generating…';
+      case 'tts_start':
+        log(`🔊 seq ${msg.seq}: ${msg.text}`,'tts');
+        setStatus('🔊 Receiving audio…');
+        _bufChunks=[];
+        if(_bufTimer) { clearTimeout(_bufTimer); _bufTimer=null; }
+        break;
 
-      try {
-        // Step 1: Get LLM response
-        const chatRes = await fetch('http://localhost:8765/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, lang: 'en' })
-        });
-        const chatData = await chatRes.json();
-        const replyText = chatData.native_text || chatData.reply || text;
+      case 'audio_chunk':
+        pendingMeta={seq:msg.seq, sample_rate:msg.sample_rate};
+        break;
 
-        // Step 2: Get TTS audio + PantoMatrix
-        const formData = new FormData();
-        const wavBlob = await textToWavBlob(replyText);  // see note below
-        formData.append('file', wavBlob, 'audio.wav');
-
-        const ttsRes = await fetch('http://localhost:8765/api/v1/chat', {
-          method: 'POST',
-          body: formData
-        });
-        const ttsData = await ttsRes.json();
-
-        // Step 3: Apply emotion
-        if (ttsData.emotion) {
-          widget.setEmotion(ttsData.emotion);
+      case 'blendshape_matrix':
+        // Server-computed PantoMatrix — set animation then flush audio
+        if (msg.matrix && msg.matrix.length > 0) {
+          widget.setAnimationMatrix(msg.matrix);
+          log(`🎭 seq ${msg.seq}: ${msg.matrix.length} blendshape frames`,'tts');
         }
+        _flushPendingAudio('matrix');
+        break;
 
-        // Step 4: Drive avatar
-        if (ttsData.animation_matrix) {
-          widget.setAnimationMatrix(ttsData.animation_matrix);
+      case 'tts_end':
+        _flushPendingAudio('tts_end');
+        {
+          const remaining=audioCtx?Math.max(0,nextPlayAt-audioCtx.currentTime):0;
+          setTimeout(() => { _isAudioPlaying=false; setStatus('● Idle'); }, remaining*1000+200);
         }
+        break;
 
-        // Step 5: Play audio
-        if (ttsData.audio_url) {
-          const audio = new Audio(ttsData.audio_url);
-          audio.onended = () => widget.clearAnimation();
-          audio.play();
-        }
+      case 'pipeline_status': break; // heartbeat
 
-        document.getElementById('status-bar').textContent = '🔊 Speaking…';
-
-        // Add to chat
-        addChatMessage('avatar', replyText);
-      } catch (err) {
-        console.error(err);
-        document.getElementById('status-bar').textContent = '⚠️ Error';
-      }
+      case 'error':
+        log(`❌ ${msg.message}`,'err');
+        setStatus('⚠️ Error');
+        break;
     }
+  }
 
-    // ── Helper: placeholder — replace with actual mic recording ──────────
-    async function textToWavBlob(text) {
-      // In production, record mic audio here.
-      // For demo, we just send text via /ws/tts which is the legacy path.
-      // The unified /api/v1/chat expects a WAV file.
-      // For now we create a minimal silent WAV.
-      const sampleRate = 16000;
-      const numSamples = sampleRate; // 1 second of silence
-      const buffer = new ArrayBuffer(44 + numSamples * 2);
-      const view = new DataView(buffer);
-      const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
-      writeStr(0, 'RIFF');
-      view.setUint32(4, 36 + numSamples * 2, true);
-      writeStr(8, 'WAVE');
-      writeStr(12, 'fmt ');
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true);
-      view.setUint16(22, 1, true);
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate * 2, true);
-      view.setUint16(32, 2, true);
-      view.setUint16(34, 16, true);
-      writeStr(36, 'data');
-      view.setUint32(40, numSamples * 2, true);
-      return new Blob([buffer], { type: 'audio/wav' });
-    }
+  // ── 7. UI wiring ─────────────────────────────────────────────────────────────
+  function updateBtns(running) {
+    document.getElementById('btn-start').disabled=running;
+    document.getElementById('btn-stop').disabled=!running;
+  }
 
-    // ── Chat UI ──────────────────────────────────────────────────────────
-    function addChatMessage(role, text) {
-      const el = document.createElement('div');
-      el.className = `msg ${role}`;
-      el.textContent = text;
-      document.getElementById('chat-messages').appendChild(el);
-      el.scrollIntoView({ behavior: 'smooth' });
-    }
+  document.getElementById('btn-start').addEventListener('click', ()=>startSession());
+  document.getElementById('btn-stop').addEventListener('click',  ()=>stopSession());
 
-    document.getElementById('btn-send').addEventListener('click', async () => {
-      const input = document.getElementById('chat-input');
-      const text = input.value.trim();
-      if (!text) return;
-      addChatMessage('user', text);
-      input.value = '';
-      document.getElementById('btn-send').disabled = true;
-      await speakText(text);
-      document.getElementById('btn-send').disabled = false;
-    });
+  document.getElementById('emotion-select').addEventListener('change', e=>{
+    widget.setEmotion(e.target.value);
+  });
+</script>
 
-    document.getElementById('chat-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') document.getElementById('btn-send').click();
-    });
-
-    // Emotion selector
-    document.getElementById('emotion-select').addEventListener('change', (e) => {
-      widget.setEmotion(e.target.value);
-    });
-
-    // ── Or use the WebSocket legacy TTS path (simpler) ───────────────────
-    // See the existing main.js _speakViaLegacyTTS for full WebSocket example.
-    // The widget.setAnimationMatrix() works with any source of PantoMatrix data.
-  </script>
 </body>
 </html>

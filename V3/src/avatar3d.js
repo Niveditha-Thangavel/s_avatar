@@ -25,6 +25,7 @@ export class Avatar3D {
     // Server-driven animation matrix
     this.currentAnimationMatrix = null;
     this.activeTargetWeights = {};
+    this.activeHeadRotation = null;
     this.animationStartTime = 0;
     this.isSpeaking = false;
 
@@ -102,6 +103,7 @@ export class Avatar3D {
   setAnimationMatrix(matrix) {
     this.currentAnimationMatrix = matrix || [];
     this.activeTargetWeights = {};
+    this.activeHeadRotation = null;
     this.animationStartTime = performance.now() / 1000;  // fallback only
     this.isSpeaking = this.currentAnimationMatrix.length > 0;
   }
@@ -109,6 +111,7 @@ export class Avatar3D {
   clearAnimation() {
     this.currentAnimationMatrix = null;
     this.activeTargetWeights = {};
+    this.activeHeadRotation = null;
     this.isSpeaking = false;
 
     // Reset ALL morph target influences to zero so no shape is frozen
@@ -471,13 +474,28 @@ export class Avatar3D {
     }
 
     this.activeTargetWeights = weights;
+
+    // Interpolate head rotation if available
+    const hrA = frameA.headRotation;
+    const hrB = frameB.headRotation;
+    if (hrA && hrB) {
+      this.activeHeadRotation = {
+        x: hrA.x + (hrB.x - hrA.x) * alpha,
+        y: hrA.y + (hrB.y - hrA.y) * alpha,
+        z: hrA.z + (hrB.z - hrA.z) * alpha,
+      };
+    }
   }
 
   render(dt, behavior, elapsed) {
     if (!this.isLoaded) return;
 
-    // ── 1. Head rotation (idle breathing from behavior) ──
-    this.setHeadRotation(behavior.rotation.x, behavior.rotation.y, behavior.rotation.z);
+    // ── 1. Head rotation — use animation matrix during speech, else idle breathing ──
+    if (this.isSpeaking && this.activeHeadRotation) {
+      this.setHeadRotation(this.activeHeadRotation.x, this.activeHeadRotation.y, this.activeHeadRotation.z);
+    } else {
+      this.setHeadRotation(behavior.rotation.x, behavior.rotation.y, behavior.rotation.z);
+    }
 
     // ── 2. Arm sways ──
     this.updateArmSways(behavior.breathingTime);

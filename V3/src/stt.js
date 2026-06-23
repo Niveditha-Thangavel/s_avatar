@@ -1,71 +1,101 @@
 /**
- * STTManager – real-time Speech-to-Text via WebSocket
- * Also accumulates recorded PCM for the unified /api/v1/chat endpoint.
+ * S2SManager — Speech-to-Speech pipeline client
  *
- * Flow (legacy):
- *  1. start()  → open WS, request mic, stream PCM frames to server
- *  2. stop()   → send { type:"stop" }  → server transcribes → reply via WS
+ * Connects to the server's /ws/s2s WebSocket endpoint and manages the full
+ * pipeline for a session:
  *
- * Flow (unified):
- *  1. start()  → record mic, accumulate PCM locally
- *  2. stop()   → stop mic, return a WAV Blob for POST /api/v1/chat
- *  3. getRecordingBlob() → returns Promise<Blob> of WAV audio
+ *   Client mic (PCM) → /ws/s2s → Vexyl STT → IndicTrans2 → LLM
+ *                                           → IndicTrans2 → vLLM-Omni TTS → Client speaker
+ *
+ * Protocol:
+ *   Client → Server:
+ *     { type: "start", lang: "hi-IN", session_id: "..." }  — initiate session
+ *     [binary Int16 PCM @ 16kHz mono]                       — audio stream
+ *     { type: "stop" }                                      — end recording
+ *     { type: "cancel" }                                    — abort session
+ *
+ *   Server → Client:
+ *     { type: "transcript", text, lang }                    — real-time STT
+ *     { type: "tts_start",  seq, text, lang }               — sentence starting
+ *     { type: "audio_chunk", seq, sample_rate, byte_length }— audio metadata
+ *     [binary PCM bytes]                                     — raw audio data
+ *     { type: "tts_end",   seq }                            — sentence done
+ *     { type: "pipeline_status", ... }                      — heartbeat
+ *     { type: "error", message }                            — error
  */
-export class STTManager {
+export class S2SManager {
+  /**
+   * @param {string} wsUrl  Full WebSocket URL, e.g. "ws://localhost:8765/ws/s2s"
+   */
   constructor(wsUrl) {
-    this.wsUrl  = wsUrl;
-    this.ws     = null;
-    this.audioCtx    = null;
-    this.micStream   = null;
+    this.wsUrl = wsUrl;
+    this.ws = null;
+
+    this.audioCtx = null;
+    this.micStream = null;
     this.workletNode = null;
     this.isListening = false;
 
-    // Callbacks — set these before calling start()
-    this.onTranscript  = null;
-    this.onReply       = null;
-    this.onStatusChange = null;
-    this.onError       = null;
+    // Registered callbacks — set before calling start()
+    this.onTranscript       = null;   // (text: string, lang: string) => void
+    this.onTTSStart         = null;   // (seq: number, text: string)  => void
+    this.onAudioChunk       = null;   // (seq: number, pcmBytes: ArrayBuffer, sampleRate: number) => void
+    this.onTTSEnd           = null;   // (seq: number) => void
+    this.onBlendshapeMatrix = null;   // (seq: number, matrix: Array) => void
+    this.onStatusChange     = null;   // (status: string) => void
+    this.onError            = null;   // (message: string) => void
 
     this._targetSampleRate = 16_000;
-
-    // Accumulated PCM chunks (Int16Array buffers) for unified API
-    this._recordedChunks = [];
+    this._sessionId = '';
+    this._pendingMeta = null;   // metadata for next binary audio frame
   }
 
-  // ── Public API ────────────────────────────────────────────────────────────
+  // ── Public API ──────────────────────────────────────────────────────────────
 
-  async start(language = null) {
+  /**
+   * Open the S2S WebSocket, request mic access, and start streaming.
+   *
+   * @param {string} lang       BCP-47 language code, e.g. "hi-IN"
+   * @param {string} sessionId  Optional session ID; auto-generated if omitted
+   */
+  async start(lang = 'hi-IN', sessionId = '') {
     if (this.isListening) return;
 
-    this._recordedChunks = [];
+    this._sessionId = sessionId || `s2s_${Date.now()}`;
+    this._pendingMeta = null;
 
-    // Open WebSocket for legacy STT pipeline (transcript display + reply)
+    // Open WebSocket
     this.ws = new WebSocket(this.wsUrl);
     this.ws.binaryType = 'arraybuffer';
 
     await new Promise((resolve, reject) => {
       this.ws.onopen  = () => resolve();
-      this.ws.onerror = () => reject(new Error('STT WebSocket failed to connect'));
+      this.ws.onerror = () => reject(new Error('S2S WebSocket failed to connect'));
     });
 
-    this.ws.onmessage = (e) => this._handleServerMessage(e);
-    this.ws.onerror   = ()  => this._emit('error', 'STT WebSocket error');
+    this.ws.onmessage = (e) => this._handleMessage(e);
+    this.ws.onerror   = ()  => this._emit('error', 'S2S WebSocket error');
     this.ws.onclose   = ()  => {
       this._teardownAudio();
       this._emit('statusChange', 'idle');
     };
 
-    this.ws.send(JSON.stringify({ type: 'config', language }));
+    // Send start handshake
+    this.ws.send(JSON.stringify({
+      type:       'start',
+      lang,
+      session_id: this._sessionId,
+    }));
 
     // Microphone
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: { ideal: this._targetSampleRate },
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          sampleRate:        { ideal: this._targetSampleRate },
+          channelCount:      1,
+          echoCancellation:  true,
+          noiseSuppression:  true,
+          autoGainControl:   true,
         },
         video: false,
       });
@@ -74,7 +104,7 @@ export class STTManager {
       throw new Error(`Microphone access denied: ${err.message}`);
     }
 
-    // AudioContext + AudioWorklet
+    // AudioContext + AudioWorklet PCM processor
     this.audioCtx = new AudioContext({ sampleRate: this._targetSampleRate });
 
     const workletCode = `
@@ -101,12 +131,8 @@ export class STTManager {
     const source = this.audioCtx.createMediaStreamSource(this.micStream);
     this.workletNode = new AudioWorkletNode(this.audioCtx, 'pcm-processor');
     this.workletNode.port.onmessage = (e) => {
-      // Accumulate for unified API
-      this._recordedChunks.push(new Int16Array(e.data));
-
-      // Also stream to server for legacy WS pipeline
       if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(e.data);
+        this.ws.send(e.data);  // stream Int16 PCM to server
       }
     };
     source.connect(this.workletNode);
@@ -115,19 +141,18 @@ export class STTManager {
     this._emit('statusChange', 'listening');
   }
 
+  /** Stop recording and signal the server to finish transcription. */
   stop() {
     if (!this.isListening) return;
     this.isListening = false;
-
     this._teardownAudio();
-
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'stop' }));
     }
-
     this._emit('statusChange', 'processing');
   }
 
+  /** Cancel the session immediately. */
   cancel() {
     this.isListening = false;
     this._teardownAudio();
@@ -135,91 +160,55 @@ export class STTManager {
       this.ws.send(JSON.stringify({ type: 'cancel' }));
       this.ws.close();
     }
-    this._recordedChunks = [];
     this._emit('statusChange', 'idle');
   }
 
-  /**
-   * Get accumulated recording as a WAV Blob for the unified /api/v1/chat endpoint.
-   * @returns {Promise<Blob>} WAV blob (16-bit PCM, 16kHz mono)
-   */
-  async getRecordingBlob() {
-    if (this._recordedChunks.length === 0) {
-      throw new Error('No audio recorded');
-    }
+  // ── Internal ────────────────────────────────────────────────────────────────
 
-    // Concatenate all Int16 chunks
-    const totalLen = this._recordedChunks.reduce((s, c) => s + c.length, 0);
-    const allPCM = new Int16Array(totalLen);
-    let offset = 0;
-    for (const chunk of this._recordedChunks) {
-      allPCM.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    const sr = this._targetSampleRate;
-    const numChannels = 1;
-    const bitsPerSample = 16;
-    const byteRate = sr * numChannels * bitsPerSample / 8;
-    const blockAlign = numChannels * bitsPerSample / 8;
-    const dataSize = allPCM.byteLength;
-    const headerSize = 44;
-    const totalSize = headerSize + dataSize;
-
-    const buffer = new ArrayBuffer(totalSize);
-    const view = new DataView(buffer);
-
-    // WAV header
-    const writeStr = (off, str) => {
-      for (let i = 0; i < str.length; i++) {
-        view.setUint8(off + i, str.charCodeAt(i));
+  _handleMessage(event) {
+    // Binary frame: raw PCM audio belonging to the last audio_chunk metadata
+    if (event.data instanceof ArrayBuffer) {
+      if (this._pendingMeta) {
+        const { seq, sample_rate } = this._pendingMeta;
+        this._pendingMeta = null;
+        this._emit('audioChunk', seq, event.data, sample_rate);
       }
-    };
-    writeStr(0, 'RIFF');
-    view.setUint32(4, totalSize - 8, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sr, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitsPerSample, true);
-    writeStr(36, 'data');
-    view.setUint32(40, dataSize, true);
+      return;
+    }
 
-    // PCM data
-    new Int16Array(buffer, headerSize, allPCM.length).set(allPCM);
-
-    return new Blob([buffer], { type: 'audio/wav' });
-  }
-
-  // ── Private ───────────────────────────────────────────────────────────────
-
-  _handleServerMessage(event) {
+    // Text frame: JSON control messages
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
 
     switch (msg.type) {
       case 'transcript':
-        this._emit('transcript', msg.text);
+        this._emit('transcript', msg.text, msg.lang);
         break;
 
-      case 'reply':
-        this._emit('reply', msg);
+      case 'tts_start':
+        this._emit('ttsStart', msg.seq, msg.text);
+        this._emit('statusChange', 'speaking');
         break;
 
-      case 'status':
-        this._emit('statusChange', msg.data);
-        if (msg.data === 'stopped' || msg.data === 'cancelled') {
-          this.ws?.close();
-        }
+      case 'audio_chunk':
+        // Store metadata; the next binary frame is the actual PCM bytes
+        this._pendingMeta = { seq: msg.seq, sample_rate: msg.sample_rate };
+        break;
+
+      case 'tts_end':
+        this._emit('ttsEnd', msg.seq);
+        break;
+
+      case 'blendshape_matrix':
+        this._emit('blendshapeMatrix', msg.seq, msg.matrix);
+        break;
+
+      case 'pipeline_status':
+        // Heartbeat — no action needed
         break;
 
       case 'error':
-        this._emit('error', msg.message);
-        this.ws?.close();
+        this._emit('error', msg.message || 'Unknown server error');
         break;
     }
   }
@@ -236,8 +225,8 @@ export class STTManager {
     this.workletNode = null;
   }
 
-  _emit(event, data) {
+  _emit(event, ...args) {
     const key = `on${event.charAt(0).toUpperCase()}${event.slice(1)}`;
-    if (typeof this[key] === 'function') this[key](data);
+    if (typeof this[key] === 'function') this[key](...args);
   }
 }

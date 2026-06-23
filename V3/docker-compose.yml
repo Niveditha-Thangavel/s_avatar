@@ -1,28 +1,60 @@
 services:
-  server:
+  orchestrator:
     build:
       context: .
       dockerfile: Dockerfile.server
-    container_name: avatar-server
+    container_name: avatar-orchestrator
     ports:
       - "8765:8765"
     environment:
       - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
-      - TRANSFORMERS_CACHE=/root/.cache/huggingface
-      - FASTER_WHISPER_CACHE=/root/.cache/faster_whisper
-      - WHISPER_MODEL_ID=Systran/faster-whisper-medium
-      - OMNIVOICE_DEVICE=cpu
+      - VEXYL_STT_URL=ws://vexyl-stt:8080
+      - LLM_BASE_URL=http://llm:8000/v1
+      - LLM_API_KEY=sk-no-key-required
+      - TTS_BASE_URL=http://vllm-omni:8091/v1
     volumes:
-      - huggingface_cache:/root/.cache/huggingface
-      - faster_whisper_cache:/root/.cache/faster_whisper
+      - ctranslate2_cache:/root/.cache/ctranslate2
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 600s
+      start_period: 30s
+    depends_on:
+      vexyl-stt:
+        condition: service_started
+      vllm-omni:
+        condition: service_started
+
+  vexyl-stt:
+    image: vexyl/vexyl-stt:latest
+    container_name: vexyl-stt
+    ports:
+      - "8080:8080"
+    environment:
+      - VEXYL_STT_PORT=8080
+    restart: unless-stopped
+
+  vllm-omni:
+    image: vllm/vllm-omni:latest
+    container_name: vllm-omni
+    ports:
+      - "8091:8091"
+    command: ["vllm", "serve", "k2-fsa/OmniVoice", "--omni", "--port", "8091", "--trust-remote-code"]
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
 
   frontend:
     build:
@@ -32,10 +64,10 @@ services:
     ports:
       - "3005:80"
     depends_on:
-      server:
+      orchestrator:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
+  ctranslate2_cache:
   huggingface_cache:
-  faster_whisper_cache:

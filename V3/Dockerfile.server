@@ -1,63 +1,44 @@
-# Dockerfile.server — Python backend
-# Pipeline: Faster-Whisper STT → Granite 4.0 LLM → SMaLL-100 Trans → OmniVoice TTS
+# Dockerfile.server — S2S Pipeline Orchestrator backend
+# Pipeline: Vexyl STT → IndicTrans2 (CT2) → LLM → IndicTrans2 (CT2) → vLLM-Omni TTS
 #
 # Build context must be the project root (V3/) — not server/ subdirectory.
 #
-# Local (CPU):
+# Build:
 #   docker build -f Dockerfile.server -t avatar-server .
-#
-# GPU server:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 
-ARG BASE_IMAGE=python:3.11-slim
-FROM $BASE_IMAGE
+FROM python:3.11-slim
 
-# Default: CPU-only torch. GPU builds override this.
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
-
-# GPU base images (pytorch/pytorch) ship torch via conda — skip pip reinstall.
-ARG SKIP_TORCH_INSTALL=false
-
-# WORKDIR=/app so `from server.xxx import` resolves to /app/server/xxx.py
 WORKDIR /app
 
-# System deps — identical to the working commit
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     curl \
-    perl \
-    ffmpeg \
-    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# PyTorch (skipped on GPU conda builds)
-RUN if [ "$SKIP_TORCH_INSTALL" != "true" ]; then \
-      pip install --no-cache-dir torch==2.5.1 torchaudio==2.5.1 \
-        --index-url $TORCH_INDEX_URL; \
-    fi
-
-# Python deps
+# Python deps (no PyTorch needed — CTranslate2 only)
 COPY server/requirements.txt server/
 RUN pip install --no-cache-dir -r server/requirements.txt
 
-# Model cache paths — must match runtime engine defaults
-ENV TRANSFORMERS_CACHE=/root/.cache/huggingface
-ENV FASTER_WHISPER_CACHE=/root/.cache/faster_whisper
+# Model cache path
+ENV CTRANSLATE2_CACHE=/root/.cache/ctranslate2
 
-# Pre-download all models at build time
-# Layer order: download script → models (heavy cached layer) → source files
-# Editing .py source does NOT bust the model-download cache layer.
+# Pre-download IndicTrans2 CT2 models at build time
 COPY server/__init__.py      server/
 COPY server/download_models.py server/
 RUN python server/download_models.py
 
-# Server source (late copy)
+# Server source (late copy — doesn't bust model cache layer)
 COPY server/*.py      server/
-COPY server/ref_audio.wav server/ref_text.txt server/
 
 ENV PYTHONUNBUFFERED=1
 ENV TOKENIZERS_PARALLELISM=false
+
+# External service URLs (override at runtime)
+ENV VEXYL_STT_URL=ws://vexyl-stt:8080
+ENV LLM_BASE_URL=http://llm:8000/v1
+ENV TTS_BASE_URL=http://vllm-omni:8091/v1
 
 EXPOSE 8765
 

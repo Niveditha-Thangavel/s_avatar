@@ -1,19 +1,16 @@
 """
-download_models.py — Pre-download all models at Docker build time.
+download_models.py — Pre-download IndicTrans2 CT2 models at build time.
 
-Runs on CPU only. All cache paths match the runtime engine defaults.
+Downloads:
+  1. ai4bharat/indictrans2-indic-en-1B-ct2   (~1.2 GB)
+  2. ai4bharat/indictrans2-en-indic-1B-ct2   (~1.2 GB)
 
-Models:
-  1. Faster-Whisper medium  (Systran/faster-whisper-medium)  ~0.7 GB
-  2. SMaLL-100              (alirezamsh/small100)             ~1.2 GB
-  3. OmniVoice              (k2-fsa/OmniVoice)               ~1.8 GB
-
-Note: Granite LLM removed — responses are now static (no LLM needed).
+Cache path: ~/.cache/ctranslate2/{en-indic-1B, indic-en-1B}
 """
 
-import importlib.util
 import logging
 import os
+import shutil
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("download_models")
@@ -22,102 +19,67 @@ HF_CACHE = os.environ.get(
     "TRANSFORMERS_CACHE",
     os.path.join(os.path.expanduser("~"), ".cache", "huggingface"),
 )
-WHISPER_MODEL_ID = os.environ.get("WHISPER_MODEL_ID", "Systran/faster-whisper-medium")
-FW_CACHE = os.environ.get(
-    "FASTER_WHISPER_CACHE",
-    os.path.join(os.path.expanduser("~"), ".cache", "faster_whisper"),
+CT2_CACHE = os.environ.get(
+    "CTRANSLATE2_CACHE",
+    os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2"),
 )
 
-os.makedirs(HF_CACHE, exist_ok=True)
-os.makedirs(FW_CACHE, exist_ok=True)
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-import torch  # noqa: E402
-
-
-# ── 1. Faster-Whisper ─────────────────────────────────────────────────────────
-log.info("[1/3] Faster-Whisper (%s) …", WHISPER_MODEL_ID)
-try:
-    from faster_whisper import WhisperModel
-    import numpy as np
-
-    model = WhisperModel(
-        WHISPER_MODEL_ID,
-        device="cpu",
-        compute_type="int8",
-        download_root=FW_CACHE,
-        cpu_threads=2,
-        num_workers=1,
-    )
-    silence = np.zeros(16000, dtype=np.float32)
-    segments, info = model.transcribe(silence, language="en", beam_size=1)
-    text = " ".join(s.text for s in segments)
-    log.info("[1/3] ✅ Faster-Whisper lang=%s output=%r", info.language, text[:60])
-    del model
-except Exception as exc:
-    log.error("[1/3] ❌ Faster-Whisper: %s", exc)
+_EN_INDIC_MODEL = "ai4bharat/indictrans2-en-indic-1B-ct2"
+_INDIC_EN_MODEL = "ai4bharat/indictrans2-indic-en-1B-ct2"
+_EN_INDIC_DST = os.path.join(CT2_CACHE, "en-indic-1B")
+_INDIC_EN_DST = os.path.join(CT2_CACHE, "indic-en-1B")
 
 
-# ── 2. SMaLL-100 ──────────────────────────────────────────────────────────────
-log.info("[2/3] SMaLL-100 (alirezamsh/small100) …")
-try:
-    from huggingface_hub import hf_hub_download
-    from transformers import M2M100ForConditionalGeneration
+def _download_ct2(hf_repo: str, dst_dir: str):
+    """Download all files from a HuggingFace CT2 model repo."""
+    from huggingface_hub import hf_hub_download, list_repo_files
 
-    tok_path = hf_hub_download(
-        "alirezamsh/small100", "tokenization_small100.py", cache_dir=HF_CACHE,
-    )
-    with open(tok_path, "r") as f:
-        src = f.read()
-    old = "from transformers.tokenization_utils import BatchEncoding, PreTrainedTokenizer"
-    new = (
-        "from transformers.tokenization_utils_base import BatchEncoding\n"
-        "from transformers.tokenization_utils import PreTrainedTokenizer"
-    )
-    if old in src:
-        with open(tok_path, "w") as f:
-            f.write(src.replace(old, new))
-        log.info("[2/3] Patched tokenization_small100.py for transformers 5.x")
-
-    spec = importlib.util.spec_from_file_location("tok100", tok_path)
-    mod  = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    tok  = mod.SMALL100Tokenizer.from_pretrained("alirezamsh/small100", cache_dir=HF_CACHE)
-    mdl  = M2M100ForConditionalGeneration.from_pretrained(
-        "alirezamsh/small100", torch_dtype=torch.float32, cache_dir=HF_CACHE,
-    )
-    tok.tgt_lang = "hi"
-    enc = tok("Hello.", return_tensors="pt")
-    out = mdl.generate(**enc, forced_bos_token_id=tok.get_lang_id("hi"), num_beams=2, max_length=16)
-    log.info("[2/3] ✅ SMaLL-100 en→hi: %s", tok.batch_decode(out, skip_special_tokens=True))
-    del mdl
-except Exception as exc:
-    log.error("[2/3] ❌ SMaLL-100: %s", exc)
+    os.makedirs(dst_dir, exist_ok=True)
+    files = list_repo_files(hf_repo)
+    for fname in files:
+        if fname.startswith("."):
+            continue
+        log.info("  Downloading %s …", fname)
+        hf_hub_download(hf_repo, filename=fname, local_dir=dst_dir, local_dir_use_symlinks=False)
+    log.info("  ✅ %d files in %s", len([f for f in files if not f.startswith(".")]), dst_dir)
 
 
-# ── 3. OmniVoice TTS ──────────────────────────────────────────────────────────
-log.info("[3/3] OmniVoice (k2-fsa/OmniVoice) …")
-try:
-    from omnivoice import OmniVoice
-    OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cpu", dtype=torch.float32)
-    log.info("[3/3] ✅ OmniVoice")
-except Exception as exc:
-    log.error("[3/3] ❌ OmniVoice: %s", exc)
+def main():
+    os.makedirs(CT2_CACHE, exist_ok=True)
+
+    # ── 1. English → Indic ──
+    if not os.path.exists(os.path.join(_EN_INDIC_DST, "model.bin")):
+        log.info("[1/2] Downloading %s → %s", _EN_INDIC_MODEL, _EN_INDIC_DST)
+        _download_ct2(_EN_INDIC_MODEL, _EN_INDIC_DST)
+    else:
+        log.info("[1/2] ✅ en→indic already cached at %s", _EN_INDIC_DST)
+
+    # ── 2. Indic → English ──
+    if not os.path.exists(os.path.join(_INDIC_EN_DST, "model.bin")):
+        log.info("[2/2] Downloading %s → %s", _INDIC_EN_MODEL, _INDIC_EN_DST)
+        _download_ct2(_INDIC_EN_MODEL, _INDIC_EN_DST)
+    else:
+        log.info("[2/2] ✅ indic→en already cached at %s", _INDIC_EN_DST)
+
+    # Quick smoke test
+    log.info("Verifying models …")
+    try:
+        import ctranslate2
+        import sentencepiece as spm
+
+        for name, path in [("indic→en", _INDIC_EN_DST), ("en→indic", _EN_INDIC_DST)]:
+            sp = spm.SentencePieceProcessor()
+            sp_path = os.path.join(path, "sentencepiece.model")
+            if os.path.exists(sp_path):
+                sp.load(sp_path)
+                log.info("  %s tokenizer OK (%d vocab)", name, sp.vocab_size())
+            t = ctranslate2.Translator(path, device="cpu")
+            log.info("  %s model OK (%s)", name, t.device)
+    except Exception as exc:
+        log.error("Verification failed: %s", exc)
+
+    log.info("✅ All models ready in %s", CT2_CACHE)
 
 
-# ── ref_audio / ref_text placeholders ─────────────────────────────────────────
-_HERE     = os.path.dirname(os.path.abspath(__file__))
-REF_AUDIO = os.path.join(_HERE, "ref_audio.wav")
-REF_TEXT  = os.path.join(_HERE, "ref_text.txt")
-
-if not os.path.exists(REF_AUDIO):
-    import numpy as np, soundfile as sf
-    sf.write(REF_AUDIO, np.zeros(24000, dtype=np.float32), 24000, format="WAV")
-    log.info("Created placeholder ref_audio.wav")
-
-if not os.path.exists(REF_TEXT):
-    with open(REF_TEXT, "w") as f:
-        f.write("Replace this with the transcription of your ref_audio.wav")
-    log.info("Created placeholder ref_text.txt")
-
-log.info("✅ All models downloaded — HF: %s | FW: %s", HF_CACHE, FW_CACHE)
+if __name__ == "__main__":
+    main()

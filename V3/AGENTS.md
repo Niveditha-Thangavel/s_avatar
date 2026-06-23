@@ -1,139 +1,161 @@
-# AGENTS — Project State
+# AGENTS — Project State (S2S Architecture)
 
-## Architecture
+## Architecture (v2.0)
 
-**Pipeline:** Mic input → Whisper large-v3-turbo STT → SMaLL-100 (→ EN) → Granite 4.0 Nano LLM → SMaLL-100 (→ native) → OmniVoice TTS → PantoMatrix (blendshapes) → unified JSON `{ audio_url, animation_matrix }`
+**Pipeline:**
+Client mic → Vexyl STT (WebSocket) → SentenceBuffer → IndicTrans2 (→EN) → External LLM → IndicTrans2 (→Indic) → vLLM-Omni TTS → PantoMatrix (server-side) → Client speaker + Avatar blendshapes
 
-**Two client paths:**
-1. **Speak button** (typed text) → `POST /chat` (text) → `/ws/tts` WebSocket → raw Float32 PCM audio → no animation matrix (legacy path)
-2. **Mic button** (recorded audio) → `POST /api/v1/chat` (WAV file) → unified pipeline → `{ audio_url, animation_matrix }`
+```
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐
+│  Vexyl   │───▶│ Indic→EN│───▶│   LLM    │───▶│  EN→Indic│───▶│vLLM-Omni TTS │
+│   STT    │    │  Trans   │    │(OpenAI)  │    │   Trans  │    │  (streaming) │
+└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────┬───────┘
+     ▲               ▲              ▲               ▲                 │
+audio in         sentence       english        response          PCM chunks
+                  complete       ready          indic                 │
+                                                                ┌──────▼───────┐
+                                                                │ PantoMatrix  │
+                                                                │ (server, via │
+                                                                │  executor)   │
+                                                                └──┬───────┬───┘
+                                                                   │       │
+                                                              audio PCM  blendshape
+                                                              (streamed)  matrix
+                                                                   │       │
+                                                                   ▼       ▼
+                                                              ┌──────────────┐
+                                                              │   Client     │
+                                                              │ (buffer ≤500ms│
+                                                              │  then flush) │
+                                                              └──────┬───────┘
+                                                                     │
+                                                               ┌─────▼──────┐
+                                                               │  Avatar3D  │
+                                                               │  (Three.js)│
+                                                               └────────────┘
+```
 
-## What's Been Done
+**Key latency strategies:**
+- **Sentence-level chunking**: `SentenceBuffer` detects `. ? ! | ।` — no waiting for full utterance
+- **Pipeline parallelism**: Sentence N+1 translates while sentence N plays via TTS
+- **Async stages**: 5 worker tasks connected by `asyncio.Queue` — each runs independently
+- **Cross-fade hints**: Frontend gets `tts_start`/`tts_end` + sequence numbers for gap-free queuing
+- **Server-side PantoMatrix**: After TTS streaming completes, `pantomatrix.py` runs in a thread executor and sends `blendshape_matrix` to the client. The frontend buffers audio chunks up to 500ms, then starts playback when the matrix arrives (perfect sync) or on timeout (close sync — elapsed time maps correctly because audio and matrix share the same duration).
 
-### Infrastructure
-- Docker: `Dockerfile.server`, `Dockerfile.nginx`, `docker-compose.yml`, `docker-compose.gpu.yml`, `.dockerignore`
-- All engines support MPS (Mac) + CUDA + CPU fallback
-- Cache paths use `os.path.expanduser("~/.cache/...")` for cross-platform
-- Models pre-downloaded at build time via `download_models.py`
-- GPU builds use `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime` base image
-- `SKIP_TORCH_INSTALL=true` for GPU builds (conda ships torch)
+## Server Files
 
-### Engine Files
 | File | Description |
 |---|---|
-| `server/main.py` | FastAPI app — `/api/v1/chat` (unified), `/chat` (text), `/ws/tts`, `/ws/stt`, `/health`, audio serving |
-| `server/stt_engine.py` | Whisper large-v3-turbo — returns `(text, lang, emotion)` |
-| `server/llm_engine.py` | Granite 4.0 Nano — emotion tokens + user_emotion in system prompt |
-| `server/translation_engine.py` | SMaLL-100 — English → native, native → English |
-| `server/tts_engine.py` | OmniVoice at 24000 Hz, sentence streaming |
-| `server/pantomatrix.py` | 52 ARKit blendshapes at 30 FPS (placeholder heuristics) |
-| `server/download_models.py` | Pre-downloads all 4 models |
+| `server/pantomatrix.py` | ARKit blendshape extraction from PCM audio (30 FPS, 52 shapes) |
+| `server/main.py` | FastAPI — `/ws/s2s` (S2S pipeline), `/health`, `/chat` (debug) |
+| `server/pipeline_orchestrator.py` | `PipelineOrchestrator` + `IndicTrans2Engine` (CT2) + data types |
+| `server/sentence_buffer.py` | `SentenceBuffer` — streaming text fragmentation, auto-flush timer |
+| `server/download_models.py` | Pre-downloads IndicTrans2 CT2 models (indic-en-1B, en-indic-1B) |
 
-### Frontend Files
+## Frontend Files
+
 | File | Description |
 |---|---|
-| `main.js` | App entry — speak button, mic button, audio playback, animation matrix |
-| `src/avatar3d.js` | Three.js avatar — `setAnimationMatrix()`, `_updateFromMatrix()`, `isSpeaking` guard |
-| `src/behavior.js` | Idle procedural motion only (speech bobbing removed) |
-| `src/stt.js` | STTManager — mic recording, `getRecordingBlob()` returns WAV Blob |
-| `vite.config.js` | Proxy `/ws`, `/chat`, `/health`, `/api` to localhost:8765 |
+| `main.js` | App entry point — S2SManager wiring, audio buffering (≤500ms for PantoMatrix sync), avatar driving |
+| `src/stt.js` | `S2SManager` — `/ws/s2s` WebSocket client (mic PCM → server, audio PCM ← server) |
+| `src/avatar3d.js` | `Avatar3D` — Three.js 3D avatar, blendshape animation matrix, emotion morphs |
+| `src/behavior.js` | `BehaviorManager` — procedural idle: breathing, blink, gaze, emotion-driven body |
+| `avatar-widget.js` | `AvatarWidget` — embeddable standalone widget with full PantoMatrix support |
+| `widget-demo.html` | Demo page for the widget — wired to `/ws/s2s` |
 
-### Bug Fixes Applied
-- **Legacy text lipsync deleted** (`V3/src/lipsync.js`)
-- **`from tts_engine` import** → `from server.tts_engine` (Python 3.12 package imports)
-- **`romanized_text` removed** from all endpoints
-- **`torch_dtype` → `dtype`** (deprecation fix across all engines)
-- **OmniVoice dtype** from string `"float32"` to `torch.float32`
-- **SenseVoiceSmall → Whisper large-v3-turbo** (rewrote stt_engine, download_models, requirements)
-- **User emotion injected** into LLM system prompt
-- **Dual audio race fixed**: `onReply` permanently replaced with no-op during mic flow
-- **Lipsync overwrite fixed**: `behavior.emotionWeights` guarded by `!this.isSpeaking`
-- **Missing deps**: `anyascii`, `uroman` re-added to `requirements.txt`
-- **`__init__.py`** added to `server/` package
-- **WAV subtype**: `sf.write(..., subtype="FLOAT")` — was writing PCM_16, frontend parsed as Float32
-- **WS TTS animation**: `/ws/tts` now accumulates audio, computes PantoMatrix, sends in complete message
-- **Frontend WS handling**: `_speakViaLegacyTTS` captures `animation_matrix` from complete message
+## External Services
 
-## Bug Fixes (latest session)
+| Service | Protocol | Default URL | Env Var |
+|---|---|---|---|
+| Vexyl STT | WebSocket (`ws://`) | `ws://localhost:8080` | `VEXYL_STT_URL` |
+| LLM (OpenAI-compatible) | HTTP POST `/v1/chat/completions` | `http://localhost:8000/v1` | `LLM_BASE_URL` |
+| vLLM-Omni TTS | HTTP POST `/v1/audio/speech` | `http://localhost:8091/v1` | `TTS_BASE_URL` |
+| IndicTrans2 (EN→Indic) | CTranslate2 (in-process) | `~/.cache/ctranslate2/en-indic-1B` | `INDIC_TRANS2_EN_INDIC` |
+| IndicTrans2 (Indic→EN) | CTranslate2 (in-process) | `~/.cache/ctranslate2/indic-en-1B` | `INDIC_TRANS2_INDIC_EN` |
 
-### PantoMatrix crash — `smile_factor` NameError (FIXED)
-- `cheekSquintLeft/Right` referenced `smile_factor` which was never assigned
-- Crashed `extract_blendshapes()` on every call → zero animation matrix always
-- Fix: added `smile_factor = max(0.0, (centroid_n - 0.50) / 0.50) * nrg_norm`
+## WebSocket Protocol (`/ws/s2s`)
 
-### PantoMatrix — viseme-class driven rewrite (v4)
-Root problem: single energy+centroid scalar cannot distinguish phoneme shapes.
-Every voiced frame had similar centroid → same jaw position for every word.
+### Client → Server
+| Message | Description |
+|---|---|
+| `{"type":"start","lang":"hi-IN","session_id":"abc"}` | Start session |
+| `[binary Int16 PCM @ 16kHz mono]` | Audio stream |
+| `{"type":"stop"}` | End session gracefully |
+| `{"type":"cancel"}` | Abort session |
 
-New architecture:
-- Per-frame sub-band energy ratios: B_low (0–500Hz), B_mid (500–2kHz), B_high (2kHz+)
-- ZCR (zero-crossing rate) combined with sub-bands to classify 7 phoneme classes:
-  SILENCE / LOW_VOWEL(/a/,/o/) / MID_VOWEL(/ɛ/,/ɪ/) / HIGH_VOWEL(/i/,/e/) /
-  FRICATIVE(/v/,/ð/) / SIBILANT(/s/,/ʃ/,/f/) / BILABIAL(/p/,/b/,/m/)
-- Each class has a distinct target pose (different jaw, lip, press, smile shapes)
-- Energy scaling via sqrt(nrg_norm) preserves amplitude dynamics within class
-- Asymmetric jaw alpha: fast attack (0.88), slower release (0.66)
-- 95th-percentile energy normalization
+### Server → Client
+| Message | Description |
+|---|---|
+| `{"type":"transcript","text":"...","lang":"..."}` | Real-time STT transcript |
+| `{"type":"tts_start","seq":1,"text":"...","lang":"..."}` | TTS beginning for sentence seq |
+| `{"type":"audio_chunk","seq":1,"sample_rate":24000,"byte_length":8192}` | Audio metadata → followed by binary float32 PCM |
+| `[binary float32 PCM]` | Raw audio data for current sentence |
+| `{"type":"blendshape_matrix","seq":1,"matrix":[...]}` | 30 FPS ARKit blendshape frames from server-side PantoMatrix |
+| `{"type":"tts_end","seq":1}` | TTS complete for this sentence |
+| `{"type":"pipeline_status","session_id":"...","seq":2,"lang":"..."}` | Health heartbeat (every 2s) |
+| `{"type":"error","message":"..."}` | Error |
 
-Validated on real TTS audio:
-- jawOpen range: 0.83–0.85 (was 0.67)
-- Unique jaw positions per sentence: 41–51 (was ~20)
-- mouthPress active for sibilants, mouthSmile for high vowels, lipsSeal for bilabials
+## PantoMatrix (Server-side)
 
-### Avatar3D frame lookup and lerp (FIXED)
-Problems fixed:
-- Frame lookup was O(n) scan with ±0.02s tolerance — wrong frame selected at 30fps
-- No interpolation between frames — stepped jaw movement at 60fps
-- `lerp(current, target, 0.25)` per render frame added ~4-frame lag on top of already-smoothed data
-Fixes applied:
-- Binary search for floor frame index (O(log n))
-- Linear interpolation between frameA and frameB using fractional position
-- Direct assignment of interpolated weights — no additional lerp in render
-- Morphtarget application moved into render() with case-insensitive fallback
+The `extract_blendshapes(audio_bytes, sample_rate)` function in `server/pantomatrix.py` processes the complete PCM audio for a sentence and returns 30 FPS ARKit blendshape frames:
+- Sub-band energy classification → 7 phoneme classes per frame
+- Each class maps to a fixed 52-blendshape ARKit target pose
+- Linear cross-fade between class transitions (3 frames)
+- Runs in a `run_in_executor` thread after all TTS chunks have been streamed to the client
 
-### Audio/animation start time sync (FIXED)
-- `setAnimationMatrix` was called AFTER `source.start(0)` → systematic animation offset
-- Fix: `audioStartTime = audioContext.currentTime` → `setAnimationMatrix()` → `source.start(0)` — all atomic
-- Render loop passes `audioContext.currentTime - audioStartTime` as elapsed directly to `_updateFromMatrix(elapsed)`
-- `_updateFromMatrix` now takes a single `elapsed` arg (no `isElapsed` flag)
+The frontend (`main.js`) buffers incoming audio chunks for up to 500ms. When `blendshape_matrix` arrives, the buffer is flushed simultaneously with `avatar.setAnimationMatrix()` — giving perfect audio-animation sync. If the 500ms timeout fires (e.g., matrix delayed), playback starts anyway; the `elapsed = audioContext.currentTime - audioStartTime` calculation naturally maps to the correct position in the matrix since audio duration equals matrix duration.
 
-## Remaining Known Issues
+## Emotion System
 
-### Server reload: `--reload` flag broken on macOS
-- `uvicorn --reload` spawns a subprocess via multiprocessing
-- Subprocess loses venv `sys.path` on macOS framework Python
-- Workaround: run without `--reload`, restart manually
+All 6 emotions are fully implemented:
+- `BehaviorManager` (`src/behavior.js`) — interpolates body params (breathing speed/amplitude, head sway) and blendshape weights per emotion
+- `Avatar3D.setEmotion()` (`src/avatar3d.js`) — immediately forces morph targets on the mesh
+- Emotions: `neutral`, `happy`, `sad`, `angry`, `surprised`, `fearful`
+- During speech: emotion morphs are dormant (server matrix drives all blendshapes)
+- During idle: emotion weights lerp smoothly via `BehaviorManager`
+
+## Cache Locations
+- IndicTrans2 CT2: `~/.cache/ctranslate2/en-indic-1B/` and `~/.cache/ctranslate2/indic-en-1B/` (~2.4GB total)
 
 ## How to Run
 
+### Prerequisites
+1. Start **Vexyl STT** server (port 8080)
+2. Start **vLLM-Omni** for TTS (port 8091):
+   ```bash
+   vllm serve k2-fsa/OmniVoice --omni --port 8091 --trust-remote-code
+   ```
+3. Have an **OpenAI-compatible LLM endpoint** available (port 8000)
+4. Download IndicTrans2 models:
+   ```bash
+   python server/download_models.py
+   ```
+
+### Launch Server
 ```bash
-# Terminal 1 — backend (use the script, NOT bare uvicorn — see segfault note below)
 cd V3
 ./start_server.sh
+# Or directly:
+uvicorn server.main:app --host 0.0.0.0 --port 8765 --loop asyncio
+```
 
-# Terminal 2 — frontend
+### Launch Frontend
+```bash
 cd V3
 npm run dev
 # Open http://localhost:3005
 ```
 
-### Why bare `uvicorn` segfaults on macOS
+## Ports
+- Backend orchestrator: 8765 (uvicorn)
+- Vexyl STT: 8080
+- vLLM-Omni TTS: 8091
+- LLM endpoint: 8000
+- Frontend (Vite dev): 3005
 
-macOS Python 3.12 uses `spawn` for multiprocessing by default. When uvicorn
-starts its event loop and simultaneously PyTorch initializes the MPS allocator,
-the OS-level semaphore for the resource tracker is created in the parent and
-then inherited (not copied) by the spawned worker — causing a segfault or
-leaked-semaphore warning on shutdown.
-
-`start_server.sh` fixes this by:
-1. Setting `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`
-2. Running with `--loop asyncio` (no subprocess workers)
-3. Killing any stale port 8765 occupant first
-
-## Relevant Ports
-- Backend: 8765 (uvicorn)
-- Frontend: 3005 (Vite dev)
-
-## Cache Locations
-- Whisper large-v3-turbo: `~/.cache/huggingface/` (~1.6GB)
-- HuggingFace models (Granite, SMaLL-100, OmniVoice): `~/.cache/huggingface/` (~6.5GB)
+## Removed / Deprecated
+- `server/stt_engine.py` — old Faster-Whisper STT (replaced by Vexyl STT)
+- `server/translation_engine.py` — old SMaLL-100 (replaced by IndicTrans2 via CTranslate2)
+- `server/llm_engine.py` — old hardcoded responses (replaced by external LLM)
+- `server/tts_engine.py` — old direct OmniVoice integration (replaced by vLLM-Omni HTTP API)
+- Legacy endpoints: `/ws/tts`, `/ws/stt`, `/api/v1/chat`, `/speak/{emotion}` — all removed

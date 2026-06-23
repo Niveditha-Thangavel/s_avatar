@@ -1,50 +1,29 @@
-import { Avatar3D } from './src/avatar3d.js';
+import { Avatar3D }      from './src/avatar3d.js';
 import { BehaviorManager } from './src/behavior.js';
-import { STTManager } from './src/stt.js';
+import { S2SManager }      from './src/stt.js';
 
-// ── Server config ─────────────────────────────────────────────────────────────
-// Uses same-origin URLs so nginx (Docker) or Vite proxy (dev) handle forwarding.
-// Override with VITE_SERVER_URL / VITE_HTTP_URL env vars for custom domains.
+// ── Server config ──────────────────────────────────────────────────────────────
+const WS_BASE = import.meta.env.VITE_SERVER_URL
+  || window.location.origin.replace(/^http/, 'ws');
 
-const getWsBase = () => {
-  if (import.meta.env.VITE_SERVER_URL) {
-    return import.meta.env.VITE_SERVER_URL;
-  }
-  return window.location.origin.replace(/^http/, 'ws');
-};
-
-const getHttpBase = () => {
-  if (import.meta.env.VITE_HTTP_URL) {
-    return import.meta.env.VITE_HTTP_URL;
-  }
-  return window.location.origin;
-};
-
-const WS_BASE   = getWsBase();
-const HTTP_BASE = getHttpBase();
-
-// Helper to resume/initialize AudioContext on user gesture
-const ensureAudioContext = () => {
-  if (!audioContext) {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  if (audioContext.state === 'suspended') {
-    console.log('[Audio] Resuming AudioContext synchronously on user gesture...');
-    audioContext.resume();
-  }
-  return audioContext;
-};
+const HTTP_BASE = import.meta.env.VITE_HTTP_URL
+  || window.location.origin;
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 let avatar   = null;
 let behavior = null;
-let stt      = null;
+let s2s      = null;
 
-// Audio playback for server-generated audio
-let audioContext = null;
-let activeAudioSource = null;
-let audioStartTime = 0;
-let isAudioPlaying = false;
+// Audio playback
+let audioContext       = null;
+let nextPlayTime       = 0;        // AudioContext scheduled play cursor
+let isAudioPlaying     = false;
+let audioStartTime     = 0;        // time of first chunk start (for animation sync)
+
+// Pending audio chunks while waiting for blendshape matrix from server
+const MATRIX_TIMEOUT_MS = 500;     // max ms to wait for matrix before forcing playback
+let _pendingChunks     = [];       // buffered until blendshape_matrix arrives or timeout fires
+let _pendingTimer      = null;     // setTimeout handle for the flush timeout
 
 let lastFrameTime = performance.now();
 let frameCount = 0;
@@ -54,46 +33,65 @@ let fpsTimer   = 0;
 window.addEventListener('DOMContentLoaded', async () => {
   injectConsoleHUD();
 
-  // 3D scene + animation
   avatar   = new Avatar3D('canvas-container', '/avatar_head.glb');
   behavior = new BehaviorManager();
 
-  // ── STT manager ───────────────────────────────────────────────────────────
-  stt = new STTManager(`${WS_BASE}/ws/stt`);
+  s2s = new S2SManager(`${WS_BASE}/ws/s2s`);
 
-  stt.onTranscript = (text) => {
-    console.log('[STT] Heard:', text);
+  // Real-time transcript display
+  s2s.onTranscript = (text, lang) => {
+    console.log(`[S2S] Transcript (${lang}):`, text);
     const ta = document.getElementById('text-input');
     if (ta) ta.value = `🎤 You: ${text}`;
-    updateProgressUI('💬 Got transcript — generating reply…', true);
+    updateProgressUI('💬 Heard — generating response…', true);
   };
 
-  stt.onReply = async (reply) => {
-    console.log('[STT] Reply:', reply);
-    const text    = reply?.native_text || reply?.reply || (typeof reply === 'string' ? reply : '');
-    const emotion = reply?.emotion || 'happy';
-
-    const ta = document.getElementById('text-input');
-    if (ta) ta.value = `🤖 Avatar: ${text}`;
-    updateProgressUI('🔊 Generating speech…', true);
-    _applyEmotion(reply?.emotion);
-    _speakText(text, emotion);
+  // New sentence starting
+  s2s.onTTSStart = (seq, text) => {
+    console.log(`[S2S] TTS start seq=${seq}:`, text);
+    updateProgressUI('🔊 Receiving audio…', true);
   };
 
-  stt.onStatusChange = (status) => {
+  // PCM chunk arrived — buffer until blendshape matrix or timeout
+  s2s.onAudioChunk = (seq, pcmBytes, sampleRate) => {
+    ensureAudioContext();
+
+    _pendingChunks.push({ pcmBytes, sampleRate });
+
+    // Start flush timeout on the first chunk of this sentence
+    if (!_pendingTimer) {
+      _pendingTimer = setTimeout(() => {
+        _flushPendingAudio('timeout');
+      }, MATRIX_TIMEOUT_MS);
+    }
+  };
+
+  // Server sends blendshape matrix after TTS streaming completes — flush & play
+  s2s.onBlendshapeMatrix = (seq, matrix) => {
+    console.log(`[S2S] Blendshape matrix seq=${seq}, frames=${matrix?.length}`);
+    if (matrix && matrix.length > 0) {
+      avatar.setAnimationMatrix(matrix);
+    }
+    _flushPendingAudio('matrix');
+  };
+
+  // TTS fully done for this sentence — force-flush pending, then schedule idle
+  s2s.onTTSEnd = (seq) => {
+    console.log(`[S2S] TTS end seq=${seq}`);
+    _flushPendingAudio('tts_end');
+    _scheduleIdle();
+  };
+
+  s2s.onStatusChange = (status) => {
     updateMicBadge(status);
     const labels = {
-      listening:    '🎤 Listening…',
-      processing:   '⏳ Processing audio…',
-      transcribing: '📝 Transcribing…',
-      thinking:     '🤔 Thinking…',
-      stopped:      '',
-      idle:         '',
+      listening:  '🎤 Listening…',
+      processing: '⏳ Processing…',
+      speaking:   '🔊 Speaking…',
+      idle:       '',
     };
-    if (labels[status] !== undefined) {
-      updateProgressUI(labels[status], !!labels[status]);
-    }
-    if (status === 'idle' || status === 'stopped') {
+    if (labels[status] !== undefined) updateProgressUI(labels[status], !!labels[status]);
+    if (status === 'idle') {
       const btn = document.getElementById('btn-mic');
       if (btn) {
         btn.classList.remove('active', 'processing');
@@ -101,313 +99,155 @@ window.addEventListener('DOMContentLoaded', async () => {
         btn.innerHTML = '<span class="btn-icon">🎤</span> Start Listening';
       }
     }
-    if (['processing', 'transcribing', 'thinking'].includes(status)) {
-      const btn = document.getElementById('btn-mic');
-      if (btn) {
-        btn.innerHTML = `<span class="btn-icon">⏳</span> ${status}…`;
-        btn.disabled = true;
-      }
-    }
   };
 
-  stt.onError = (msg) => console.error('[STT]', msg);
+  s2s.onError = (msg) => {
+    console.error('[S2S]', msg);
+    updateStatusBadge('error');
+    updateProgressUI(`❌ ${msg}`, false);
+  };
 
-  // Bind UI + start render loop
   setupEventListeners();
   setupAvatarLoadingEvents();
   setupCalibrationSliders();
   requestAnimationFrame(renderLoop);
 });
 
-// ── Apply emotion to avatar + behavior ───────────────────────────────────────
+// ── Audio context helper ──────────────────────────────────────────────────────
+function ensureAudioContext() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioContext.state === 'suspended') audioContext.resume();
+  return audioContext;
+}
+
+function _stopAudio() {
+  isAudioPlaying = false;
+  nextPlayTime   = 0;
+  audioStartTime = 0;
+  _pendingChunks = [];
+  if (_pendingTimer) { clearTimeout(_pendingTimer); _pendingTimer = null; }
+  avatar?.clearAnimation();
+}
+
+function _flushPendingAudio(reason) {
+  if (_pendingTimer) { clearTimeout(_pendingTimer); _pendingTimer = null; }
+  if (_pendingChunks.length === 0) return;
+
+  console.log(`[S2S] Flushing ${_pendingChunks.length} chunks (reason=${reason})`);
+
+  // Mark start time before the first chunk so animation elapsed is correct
+  if (!isAudioPlaying) {
+    audioStartTime = nextPlayTime < audioContext.currentTime
+      ? audioContext.currentTime
+      : nextPlayTime;
+    isAudioPlaying = true;
+    updateStatusBadge('speaking');
+  }
+
+  for (const chunk of _pendingChunks) {
+    _playAudioChunk(chunk.pcmBytes, chunk.sampleRate);
+  }
+  _pendingChunks = [];
+}
+
+function _playAudioChunk(pcmBytes, sampleRate) {
+  const float32 = new Float32Array(pcmBytes);
+  const buf = audioContext.createBuffer(1, float32.length, sampleRate);
+  buf.getChannelData(0).set(float32);
+
+  const source = audioContext.createBufferSource();
+  source.buffer = buf;
+  source.connect(audioContext.destination);
+
+  if (nextPlayTime < audioContext.currentTime) {
+    nextPlayTime = audioContext.currentTime;
+  }
+
+  source.start(nextPlayTime);
+  nextPlayTime += buf.duration;
+}
+
+function _scheduleIdle() {
+  const remaining = Math.max(0, nextPlayTime - (audioContext?.currentTime ?? 0));
+  setTimeout(() => {
+    isAudioPlaying = false;
+    updateStatusBadge('idle');
+    updateProgressUI('', false);
+  }, remaining * 1000 + 200);
+}
+
+// ── Apply emotion ─────────────────────────────────────────────────────────────
 function _applyEmotion(emotion) {
   if (!emotion) return;
   const valid = ['neutral', 'happy', 'sad', 'angry', 'surprised', 'fearful'];
   const e = valid.includes(emotion) ? emotion : 'happy';
   if (behavior) behavior.currentEmotion = e;
   if (avatar)   avatar.setEmotion(e);
-  // Update the dropdown to reflect current emotion
   const sel = document.getElementById('emotion-select');
   if (sel) sel.value = e;
+  const hud = document.getElementById('hud-emotion');
+  if (hud) hud.innerText = e;
   console.log(`[Emotion] Applied: ${e}`);
 }
-/**
- * Speak text via /ws/tts. Emotion is passed to the server so it can bake
- * emotional blendshapes into the animation matrix.
- */
-async function _speakText(text, emotion = 'happy') {
-  if (!text?.trim()) return;
 
-  _stopAudio();
-
+// ── Debug: typed text → /chat ─────────────────────────────────────────────────
+async function _sendChatText(text) {
+  if (!text.trim()) return;
   updateStatusBadge('generating');
-  updateProgressUI('🔊 Generating speech…', true);
-
+  updateProgressUI('💬 Sending to /chat…', true);
   try {
-    const instruct = document.getElementById('instruct-input')?.value?.trim() || null;
-    const speed    = parseFloat(document.getElementById('speed-range')?.value   || '1.0');
-    const numStep  = parseInt(document.getElementById('quality-select')?.value  || '16', 10);
-
-    await _speakViaLegacyTTS(text, instruct, speed, numStep, emotion);
-  } catch (err) {
-    console.error('[Speak]', err);
-    updateStatusBadge('error');
-    updateProgressUI('❌ TTS error', false);
-  }
-}
-
-/**
- * Legacy TTS path: streams via /ws/tts WebSocket.
- * Sends emotion to server so it bakes emotion into the blendshape matrix.
- * Also applies emotion to BehaviorManager so idle pose matches.
- */
-async function _speakViaLegacyTTS(text, instruct, speed, numStep, emotion = 'happy') {
-  return new Promise((resolve, reject) => {
-    console.log('[TTS-WS] Connecting, emotion=' + emotion);
-    const ws = new WebSocket(`${WS_BASE}/ws/tts`);
-    ws.binaryType = 'arraybuffer';
-
-    const audioChunks = [];
-    let animationMatrix = null;
-    let serverEmotion   = emotion;
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        type: 'speak',
-        text,
-        instruct,
-        speed,
-        numStep,
-        emotion,   // ← tell server which emotion to bake in
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        audioChunks.push(new Float32Array(event.data));
-        return;
-      }
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'status' && msg.data === 'complete') {
-          animationMatrix = msg.animation_matrix || null;
-          serverEmotion   = msg.emotion || emotion;
-          console.log('[TTS-WS] complete. frames=' + (animationMatrix?.length || 0) + ' emotion=' + serverEmotion);
-          ws.close();
-        } else if (msg.type === 'error') {
-          reject(new Error(msg.message || 'TTS error'));
-        }
-      } catch (err) {
-        console.error('[TTS-WS] JSON parse error:', err);
-      }
-    };
-
-    ws.onclose = () => {
-      if (audioChunks.length === 0) {
-        resolve();
-        return;
-      }
-      const totalLen = audioChunks.reduce((s, c) => s + c.length, 0);
-      const combined = new Float32Array(totalLen);
-      let offset = 0;
-      for (const chunk of audioChunks) { combined.set(chunk, offset); offset += chunk.length; }
-
-      // Apply emotion to behavior so idle pose also reflects the emotion
-      if (behavior) behavior.currentEmotion = serverEmotion;
-
-      _playAudioBuffer(combined, 24000, animationMatrix);
-      updateStatusBadge('speaking');
-      updateProgressUI('▶️ Playing…', false);
-      resolve();
-    };
-
-    ws.onerror = (err) => {
-      console.error('[TTS-WS] error:', err);
-      reject(new Error('WebSocket error'));
-    };
-  });
-}
-
-/**
- * Play audio through Web Audio API and drive avatar from animation matrix.
- * IMPORTANT: audioStartTime and setAnimationMatrix must be set atomically —
- * both use the AudioContext clock so they are perfectly aligned.
- */
-function _playAudioBuffer(audioData, sampleRate, animationMatrix) {
-  _stopAudio();
-  console.log('[Audio] _playAudioBuffer called. Data type:', audioData.constructor.name, 'Sample rate:', sampleRate, 'Matrix length:', animationMatrix?.length || 0);
-
-  ensureAudioContext();
-
-  let buffer;
-  if (audioData instanceof AudioBuffer) {
-    buffer = audioData;
-  } else {
-    buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
-    buffer.getChannelData(0).set(audioData);
-  }
-
-  const source = audioContext.createBufferSource();
-  source.buffer = buffer;
-  source.connect(audioContext.destination);
-
-  // Capture the exact AudioContext start time BEFORE source.start()
-  // then prime the animation matrix immediately — zero offset between audio and blendshapes.
-  audioStartTime = audioContext.currentTime;
-  isAudioPlaying = true;
-
-  if (animationMatrix && animationMatrix.length > 0) {
-    avatar.setAnimationMatrix(animationMatrix);
-  }
-
-  source.start(0);
-  activeAudioSource = source;
-
-  source.onended = () => {
-    activeAudioSource = null;
-    isAudioPlaying = false;
-    avatar.clearAnimation();
+    const res = await fetch(`${HTTP_BASE}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const ta = document.getElementById('text-input');
+    if (ta) ta.value = JSON.stringify(data, null, 2);
     updateStatusBadge('idle');
     updateProgressUI('', false);
-  };
-}
-
-function _stopAudio() {
-  if (activeAudioSource) {
-    try { activeAudioSource.stop(); } catch {}
-    activeAudioSource = null;
-  }
-  isAudioPlaying = false;
-  avatar.clearAnimation();
-}
-
-/**
- * Send recorded audio to /api/v1/chat for unified processing.
- */
-async function _sendAudioToUnifiedAPI(audioBlob) {
-  updateProgressUI('📤 Sending audio…', true);
-
-  try {
-    const formData = new FormData();
-    formData.append('file', audioBlob, 'audio.wav');
-
-    const res = await fetch(`${HTTP_BASE}/api/v1/chat`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`API error ${res.status}: ${errText}`);
-    }
-
-    const data = await res.json();
-    const { audio_url, animation_matrix, emotion } = data;
-    _applyEmotion(emotion);
-
-    updateProgressUI('🔊 Playing response…', true);
-
-    // Fetch the audio from the returned URL
-    const audioRes = await fetch(audio_url);
-    const audioArrayBuffer = await audioRes.arrayBuffer();
-
-    if (!audioContext) {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (audioContext.state === 'suspended') {
-      await audioContext.resume();
-    }
-
-    // Decode WAV container natively (handles sample rates and formats automatically)
-    const decodedBuffer = await audioContext.decodeAudioData(audioArrayBuffer);
-
-    _playAudioBuffer(decodedBuffer, decodedBuffer.sampleRate, animation_matrix);
-    updateStatusBadge('speaking');
   } catch (err) {
-    console.error('[UnifiedAPI]', err);
+    console.error('[Chat]', err);
     updateStatusBadge('error');
-    updateProgressUI(`❌ Error: ${err.message}`, false);
+    updateProgressUI(`❌ ${err.message}`, false);
   }
 }
 
 // ── Event listeners ───────────────────────────────────────────────────────────
 function setupEventListeners() {
 
-  // Speak button — typed text
   document.getElementById('btn-speak')?.addEventListener('click', async () => {
     ensureAudioContext();
     const text = document.getElementById('text-input')?.value?.trim();
     if (!text) return;
-
-    updateStatusBadge('generating');
-    updateProgressUI('🔊 Generating speech…', true);
-
-    try {
-      const res = await fetch(`${HTTP_BASE}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const reply = await res.json();
-      if (reply && (reply.native_text || reply.reply)) {
-        const native  = reply.native_text || reply.reply || text;
-        const emotion = reply.emotion || 'happy';
-        document.getElementById('text-input').value = `🤖 Avatar: ${native}`;
-        _applyEmotion(reply.emotion);
-        _speakText(native, emotion);
-        return;
-      }
-    } catch (_err) {
-      console.warn('[Chat] Brain unavailable, speaking typed text directly');
-    }
-
-    _speakText(text, 'neutral');
+    await _sendChatText(text);
   });
 
-  // Stop button
   document.getElementById('btn-stop')?.addEventListener('click', () => {
+    if (s2s.isListening) s2s.cancel();
     _stopAudio();
     updateStatusBadge('idle');
+    updateProgressUI('', false);
   });
 
-  // Mic toggle
   const btnMic = document.getElementById('btn-mic');
   if (btnMic) {
     btnMic.addEventListener('click', async () => {
       ensureAudioContext();
-      if (stt.isListening) {
+      if (s2s.isListening) {
+        s2s.stop();
         btnMic.classList.remove('active');
         btnMic.innerHTML = '<span class="btn-icon">⏳</span> Processing…';
         btnMic.disabled  = true;
-
-        // Stop recording
-        stt.stop();
-
-        // Use unified /api/v1/chat endpoint exclusively.
-        // Permanently suppress the legacy onReply → _speakViaLegacyTTS path —
-        // the unified API already returns audio + animation matrix.
-        // The typed text "Speak" button bypasses STT entirely, so it's safe.
-        stt.onReply = (reply) => {
-          console.log('[STT] Reply (suppressed):', reply);
-          const text = reply?.native_text || reply?.reply || '';
-          const ta = document.getElementById('text-input');
-          if (ta) ta.value = `🤖 Avatar: ${text}`;
-        };
-
-        try {
-          const blob = await stt.getRecordingBlob();
-          updateProgressUI('📤 Sending to server…', true);
-          await _sendAudioToUnifiedAPI(blob);
-        } catch (err) {
-          console.error('[Mic->Unified]', err);
-        }
       } else {
         try {
-          const lang = document.getElementById('lang-select')?.value || null;
-          await stt.start(lang);
+          const lang = document.getElementById('lang-select')?.value || 'hi-IN';
+          await s2s.start(lang);
           btnMic.classList.add('active');
-          btnMic.innerHTML = '<span class="btn-icon">🔴</span> Stop & Transcribe';
+          btnMic.innerHTML = '<span class="btn-icon">🔴</span> Stop';
         } catch (err) {
           console.error('[Mic]', err.message);
           alert(err.message);
@@ -416,31 +256,17 @@ function setupEventListeners() {
     });
   }
 
-  // Speed slider
-  const speedRange = document.getElementById('speed-range');
-  const speedVal   = document.getElementById('speed-val');
-  speedRange?.addEventListener('input', () => {
-    if (speedVal) speedVal.innerText = speedRange.value;
-  });
-
-  // Emotion select
   document.getElementById('emotion-select')?.addEventListener('change', (e) => {
-    if (behavior) behavior.currentEmotion = e.target.value;
-    if (avatar)   avatar.setEmotion(e.target.value);
+    _applyEmotion(e.target.value);
   });
 
-  // Custom GLB upload
   document.getElementById('image-upload')?.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (!/\.(glb|gltf)$/i.test(file.name)) {
-      alert('Please select a .glb or .gltf file.');
-      return;
-    }
+    if (!/\.(glb|gltf)$/i.test(file.name)) { alert('Please select a .glb or .gltf file.'); return; }
     avatar.loadGLBModel(URL.createObjectURL(file));
   });
 
-  // Reset avatar
   document.getElementById('btn-reset-avatar')?.addEventListener('click', () => {
     avatar.loadGLBModel('/avatar_head.glb');
   });
@@ -451,8 +277,7 @@ function setupAvatarLoadingEvents() {
   window.addEventListener('avatar-loading-progress', (e) => {
     showLoader();
     document.getElementById('progress-bar-fill').style.width = `${e.detail}%`;
-    document.getElementById('progress-text').innerText =
-      `Loading 3D Model: ${e.detail.toFixed(1)}%`;
+    document.getElementById('progress-text').innerText = `Loading 3D Model: ${e.detail.toFixed(1)}%`;
   });
   window.addEventListener('avatar-loaded', () => {
     hideLoader();
@@ -478,7 +303,7 @@ function renderLoop() {
 
   behavior.update(dt);
 
-  // Calculate elapsed time from the precise AudioContext clock if playing
+  // Pass AudioContext elapsed time so avatar3d._updateFromMatrix stays in sync
   let elapsed = null;
   if (isAudioPlaying && audioContext) {
     elapsed = audioContext.currentTime - audioStartTime;
@@ -491,38 +316,23 @@ function renderLoop() {
 function updateStatusBadge(status) {
   const badge = document.getElementById('hud-status');
   if (badge) { badge.className = `status-badge ${status}`; badge.innerText = status; }
-
   const busy = ['generating', 'speaking', 'thinking', 'transcribing'].includes(status);
   document.getElementById('btn-speak')?.toggleAttribute('disabled', busy);
   document.getElementById('btn-stop')?.toggleAttribute('disabled', !busy);
-
-  if (['idle', 'complete', 'stopped'].includes(status)) {
-    hideLoader();
-    updateProgressUI('', false);
-  }
+  if (['idle', 'complete', 'stopped'].includes(status)) { hideLoader(); updateProgressUI('', false); }
 }
 
 function updateProgressUI(message, showSpinner) {
   const bar  = document.getElementById('progress-bar');
   const text = document.getElementById('progress-label');
   if (!bar || !text) return;
-
-  if (!message) {
-    bar.style.display = 'none';
-    return;
-  }
-
+  if (!message) { bar.style.display = 'none'; return; }
   bar.style.display = 'flex';
   text.innerText = message;
-
   const fill = document.getElementById('progress-bar-fill');
   if (fill) {
-    if (showSpinner) {
-      fill.classList.add('indeterminate');
-    } else {
-      fill.classList.remove('indeterminate');
-      fill.style.width = '100%';
-    }
+    if (showSpinner) fill.classList.add('indeterminate');
+    else { fill.classList.remove('indeterminate'); fill.style.width = '100%'; }
   }
 }
 
@@ -538,16 +348,12 @@ function hideLoader()  { document.getElementById('model-loader')?.classList.add(
 function injectConsoleHUD() {
   const hud = document.createElement('div');
   Object.assign(hud.style, {
-    position: 'fixed', bottom: '10px', left: '10px',
-    width: '350px', height: '150px',
-    backgroundColor: 'rgba(10,10,15,0.85)',
-    color: '#00e676', fontFamily: 'monospace', fontSize: '11px',
-    padding: '8px', overflowY: 'auto', zIndex: '10000',
-    border: '1px solid #00e676', borderRadius: '6px',
-    pointerEvents: 'none',
+    position: 'fixed', bottom: '10px', left: '10px', width: '350px', height: '150px',
+    backgroundColor: 'rgba(10,10,15,0.85)', color: '#00e676', fontFamily: 'monospace',
+    fontSize: '11px', padding: '8px', overflowY: 'auto', zIndex: '10000',
+    border: '1px solid #00e676', borderRadius: '6px', pointerEvents: 'none',
   });
   document.body.appendChild(hud);
-
   ['log', 'warn', 'error'].forEach((lvl) => {
     const orig = console[lvl];
     console[lvl] = (...args) => {
@@ -555,8 +361,7 @@ function injectConsoleHUD() {
       const line = document.createElement('div');
       line.style.marginBottom = '4px';
       line.style.color = lvl === 'error' ? '#ff1744' : lvl === 'warn' ? '#ffea00' : '#00e676';
-      line.innerText = `[${lvl.toUpperCase()}] ${args.map(a =>
-        typeof a === 'object' ? JSON.stringify(a) : a).join(' ')}`;
+      line.innerText = `[${lvl.toUpperCase()}] ${args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ')}`;
       hud.appendChild(line);
       hud.scrollTop = hud.scrollHeight;
     };
@@ -597,9 +402,7 @@ function setupCalibrationSliders() {
     if (!el) return;
     el.addEventListener('input', () => {
       const v = parseFloat(el.value);
-      const matchKey = Object.keys(defaults).find(k =>
-        k.toLowerCase() === camelKey.toLowerCase()
-      );
+      const matchKey = Object.keys(defaults).find(k => k.toLowerCase() === camelKey.toLowerCase());
       if (matchKey) {
         window.avatarCalibration[matchKey] = v;
         if (valEl) valEl.innerText = v.toFixed(2);
@@ -613,9 +416,7 @@ function setupCalibrationSliders() {
     sliders.forEach((s) => {
       const el    = document.getElementById(`cal-${s}`);
       const valEl = document.getElementById(`cal-${s}-val`);
-      const matchKey = Object.keys(defaults).find(k =>
-        k.toLowerCase() === s.replace('-','').toLowerCase()
-      );
+      const matchKey = Object.keys(defaults).find(k => k.toLowerCase() === s.replace('-','').toLowerCase());
       if (el && matchKey) {
         el.value = defaults[matchKey];
         if (valEl) valEl.innerText = defaults[matchKey].toFixed(2);

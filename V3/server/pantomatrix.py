@@ -25,6 +25,15 @@ Phoneme classes
   FRICATIVE  — /v/ /ð/ /z/  — near-closed jaw, lip press
   SIBILANT   — /s/ /ʃ/ /f/  — minimal jaw, teeth-near, press
   BILABIAL   — /p/ /b/ /m/  — lips closed (seal), then burst
+
+Usage
+─────
+  from server.pantomatrix import extract_blendshapes
+
+  # audio_bytes: raw float32 PCM, little-endian  (from vLLM-Omni)
+  # sample_rate: int  (typically 24000)
+  frames = extract_blendshapes(audio_bytes, sample_rate=24000)
+  # → [{"time": 0.0, "blendshapes": {"jawOpen": 0.4, ...}}, ...]
 """
 
 import logging
@@ -76,13 +85,11 @@ _CLS_FRICATIVE  = 4
 _CLS_SIBILANT   = 5
 _CLS_BILABIAL   = 6
 
-# ── Pose templates — these are NORMALISED max weights (energy-scaled at runtime)
-# ── Rest pose is intentionally ALL ZEROS — no shapes frozen after speech ends.
+# ── Pose templates ────────────────────────────────────────────────────────────
 _POSE = {
-    _CLS_SILENCE: {},   # ← empty dict = every shape is 0.0
+    _CLS_SILENCE: {},
 
     _CLS_LOW_VOWEL: {
-        # /a/ /ɑ/: wide jaw, upper lip up, lower lip down, slight frown
         "jawOpen":             0.82,
         "jawForward":          0.08,
         "mouthUpperUpLeft":    0.35,
@@ -97,7 +104,6 @@ _POSE = {
     },
 
     _CLS_MID_VOWEL: {
-        # /ɛ/ /ɪ/: mid jaw, slightly spread
         "jawOpen":             0.50,
         "jawForward":          0.05,
         "mouthUpperUpLeft":    0.22,
@@ -111,7 +117,6 @@ _POSE = {
     },
 
     _CLS_HIGH_VOWEL: {
-        # /i/ /e/: narrow jaw, wide smile, lip corners pulled back
         "jawOpen":             0.25,
         "mouthSmileLeft":      0.55,
         "mouthSmileRight":     0.55,
@@ -127,7 +132,6 @@ _POSE = {
     },
 
     _CLS_FRICATIVE: {
-        # /v/ /ð/ /z/: near-closed, lower lip under teeth
         "jawOpen":             0.16,
         "mouthPressLeft":      0.32,
         "mouthPressRight":     0.32,
@@ -140,7 +144,6 @@ _POSE = {
     },
 
     _CLS_SIBILANT: {
-        # /s/ /ʃ/ /f/: jaw nearly shut, teeth close, lips retracted
         "jawOpen":             0.07,
         "mouthPressLeft":      0.52,
         "mouthPressRight":     0.52,
@@ -153,7 +156,6 @@ _POSE = {
     },
 
     _CLS_BILABIAL: {
-        # /p/ /b/ /m/: lips together, zero jaw, slight cheek puff
         "jawOpen":             0.02,
         "mouthPressLeft":      0.28,
         "mouthPressRight":     0.28,
@@ -163,11 +165,10 @@ _POSE = {
     },
 }
 
-# Pre-build zero-filled full pose for every class (vectorised below)
 _ZERO_POSE = {k: 0.0 for k in _ALL_BLENDSHAPES}
 
+
 def _full_pose(cls_id: int) -> dict:
-    """Return a complete 52-shape pose dict for a class, unscaled."""
     base = _ZERO_POSE.copy()
     base.update(_POSE[cls_id])
     return base
@@ -218,16 +219,9 @@ def _classify(nrg_norm: float, zcr: float,
     return _CLS_MID_VOWEL
 
 
-# ── Linear interpolation between two full poses ───────────────────────────────
-
 def _lerp_poses(pose_a: dict, pose_b: dict, t: float) -> dict:
-    """
-    Linear interpolation: result(k) = pose_a(k) + t * (pose_b(k) - pose_a(k))
-    t ∈ [0.0, 1.0]  →  0.0 = pure A, 1.0 = pure B.
-    """
-    result = {}
-    # All keys are the union of the two poses — missing key treated as 0.
     all_keys = set(pose_a.keys()) | set(pose_b.keys())
+    result = {}
     for k in all_keys:
         a = pose_a.get(k, 0.0)
         b = pose_b.get(k, 0.0)
@@ -235,7 +229,7 @@ def _lerp_poses(pose_a: dict, pose_b: dict, t: float) -> dict:
     return result
 
 
-# ── Main extractor ─────────────────────────────────────────────────────────────
+# ── Main extractor ────────────────────────────────────────────────────────────
 
 def extract_blendshapes(
     audio_bytes: bytes,
@@ -247,7 +241,7 @@ def extract_blendshapes(
     Parameters
     ----------
     audio_bytes : bytes   — raw float32 PCM, little-endian
-    sample_rate : int     — Hz (expected 24000 from OmniVoice)
+    sample_rate : int     — Hz (expected 24000 from vLLM-Omni)
 
     Returns
     -------
@@ -298,56 +292,36 @@ def extract_blendshapes(
         prev_cls   = cls
 
     # ── 4. Build target poses per frame (energy-scaled) ───────────────────────
-    # target_poses[i] = full 52-shape dict scaled by sqrt(nrg_norm)
     target_poses: List[dict] = []
     for i in range(num_frames):
         base  = _full_pose(classes[i])
         scale = math.sqrt(nrg_norms[i]) if classes[i] != _CLS_SILENCE else 1.0
-        # silence scale = 1.0 but _POSE[SILENCE] is all zeros, so result is 0.
         scaled = {k: v * scale for k, v in base.items()}
         target_poses.append(scaled)
 
     # ── 5. Linear cross-fade between consecutive class transitions ────────────
-    #
-    # For every frame i, if classes[i] differs from classes[i-1]:
-    #   we ramp linearly from target_poses[i-1]  →  target_poses[i]
-    #   over TRANSITION_FRAMES frames.
-    #
-    # This replaces the IIR smoothing (which caused every class to
-    # feel sluggish) with an explicit linear ramp that:
-    #   • Always reaches the target within TRANSITION_FRAMES frames
-    #   • Doesn't accumulate lag across multiple class changes
-    #   • Produces predictable, tunable transition timing
-    #
     blended_poses: List[dict] = [None] * num_frames
 
-    # Walk through and apply cross-fades
     i = 0
     while i < num_frames:
         blended_poses[i] = target_poses[i].copy()
 
-        # Detect class change starting at i+1
         if i < num_frames - 1 and classes[i + 1] != classes[i]:
             pose_from = target_poses[i]
-            # Find the target pose for the new class — use i+1
             pose_to   = target_poses[i + 1]
             T         = TRANSITION_FRAMES
 
-            # Apply linear ramp over T frames (from i+1 to i+T inclusive)
             for step in range(1, T + 1):
                 j = i + step
                 if j >= num_frames:
                     break
-                t_norm = step / T   # 0 < t_norm ≤ 1.0  — strictly linear
-                blended = _lerp_poses(pose_from, pose_to, t_norm)
-                blended_poses[j] = blended
+                t_norm = step / T
+                blended_poses[j] = _lerp_poses(pose_from, pose_to, t_norm)
 
-            # Skip forward past the transition window (those frames are set)
             i += T
         else:
             i += 1
 
-    # Fill any gaps (shouldn't happen, but guard)
     for i in range(num_frames):
         if blended_poses[i] is None:
             blended_poses[i] = target_poses[i].copy()
@@ -363,10 +337,9 @@ def extract_blendshapes(
         nrg_norm = float(nrg_norms[idx])
         pose     = blended_poses[idx]
 
-        # Build full frame from blended phoneme pose
         frame = {k: max(0.0, min(1.0, pose.get(k, 0.0))) for k in _ALL_BLENDSHAPES}
 
-        # Jaw micro-tremor (prevents robotic stillness on sustained vowels)
+        # Jaw micro-tremor
         if classes[idx] not in (_CLS_SILENCE, _CLS_BILABIAL, _CLS_SIBILANT):
             micro = math.sin(t * 31.4) * 0.012 * nrg_norm
             frame["jawOpen"] = max(0.0, min(1.0, frame["jawOpen"] + micro))
@@ -378,7 +351,6 @@ def extract_blendshapes(
             frame["jawRight"]   = max(0.0, -drift)
             frame["jawForward"] = max(0.0, frame.get("jawForward", 0.0))
 
-        # Tongue out: always 0
         frame["tongueOut"] = 0.0
 
         # Blink
@@ -417,7 +389,7 @@ def extract_blendshapes(
         # Brows
         frame["browDownLeft"]     = max(0.0, nrg_norm - 0.55) * 0.22
         frame["browDownRight"]    = max(0.0, nrg_norm - 0.55) * 0.22
-        frame["browInnerUp"]      = frame.get("browInnerUp", 0.0)   # from pose
+        frame["browInnerUp"]      = frame.get("browInnerUp", 0.0)
         brow_r                    = (1.0 - min(nrg_norm * 2.0, 1.0)) * 0.09
         frame["browOuterUpLeft"]  = brow_r
         frame["browOuterUpRight"] = brow_r
