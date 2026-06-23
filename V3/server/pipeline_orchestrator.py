@@ -159,8 +159,12 @@ class IndicTrans2Engine:
         self._device = device
         self._en_indic: Optional["ctranslate2.Translator"] = None
         self._indic_en: Optional["ctranslate2.Translator"] = None
-        self._sp_en_indic: Optional["sentencepiece.SentencePieceProcessor"] = None
-        self._sp_indic_en: Optional["sentencepiece.SentencePieceProcessor"] = None
+        
+        self._sp_en_indic_src: Optional["sentencepiece.SentencePieceProcessor"] = None
+        self._sp_en_indic_tgt: Optional["sentencepiece.SentencePieceProcessor"] = None
+        self._sp_indic_en_src: Optional["sentencepiece.SentencePieceProcessor"] = None
+        self._sp_indic_en_tgt: Optional["sentencepiece.SentencePieceProcessor"] = None
+        
         self._lock = asyncio.Lock()
         self._loaded = False
 
@@ -187,24 +191,51 @@ class IndicTrans2Engine:
         import sentencepiece as spm
 
         # ── English → Indic ──
-        self._sp_en_indic = spm.SentencePieceProcessor()
-        sp_path = os.path.join(self._en_indic_path, "sentencepiece.model")
-        if os.path.exists(sp_path):
-            self._sp_en_indic.load(sp_path)
+        self._sp_en_indic_src = spm.SentencePieceProcessor()
+        self._sp_en_indic_tgt = spm.SentencePieceProcessor()
+        
+        sp_src_path = os.path.join(self._en_indic_path, "vocab", "model.SRC")
+        sp_tgt_path = os.path.join(self._en_indic_path, "vocab", "model.TGT")
+        
+        if os.path.exists(sp_src_path) and os.path.exists(sp_tgt_path):
+            self._sp_en_indic_src.load(sp_src_path)
+            self._sp_en_indic_tgt.load(sp_tgt_path)
         else:
-            logger.warning(
-                "[IndicTrans2] No sentencepiece.model in %s; using dummy",
-                self._en_indic_path,
-            )
+            sp_path = os.path.join(self._en_indic_path, "sentencepiece.model")
+            if os.path.exists(sp_path):
+                self._sp_en_indic_src.load(sp_path)
+                self._sp_en_indic_tgt.load(sp_path)
+            else:
+                logger.warning(
+                    "[IndicTrans2] Tokenizer files not found in %s; using dummy",
+                    self._en_indic_path,
+                )
+
         self._en_indic = ctranslate2.Translator(
             self._en_indic_path, device=self._device
         )
 
         # ── Indic → English ──
-        self._sp_indic_en = spm.SentencePieceProcessor()
-        sp_path = os.path.join(self._indic_en_path, "sentencepiece.model")
-        if os.path.exists(sp_path):
-            self._sp_indic_en.load(sp_path)
+        self._sp_indic_en_src = spm.SentencePieceProcessor()
+        self._sp_indic_en_tgt = spm.SentencePieceProcessor()
+        
+        sp_src_path = os.path.join(self._indic_en_path, "vocab", "model.SRC")
+        sp_tgt_path = os.path.join(self._indic_en_path, "vocab", "model.TGT")
+        
+        if os.path.exists(sp_src_path) and os.path.exists(sp_tgt_path):
+            self._sp_indic_en_src.load(sp_src_path)
+            self._sp_indic_en_tgt.load(sp_tgt_path)
+        else:
+            sp_path = os.path.join(self._indic_en_path, "sentencepiece.model")
+            if os.path.exists(sp_path):
+                self._sp_indic_en_src.load(sp_path)
+                self._sp_indic_en_tgt.load(sp_path)
+            else:
+                logger.warning(
+                    "[IndicTrans2] Tokenizer files not found in %s; using dummy",
+                    self._indic_en_path,
+                )
+
         self._indic_en = ctranslate2.Translator(
             self._indic_en_path, device=self._device
         )
@@ -227,11 +258,11 @@ class IndicTrans2Engine:
     def _indic_to_eng_sync(self, text: str, src_lang: str) -> str:
         # Prepend source language token
         prefixed = f"__{src_lang}__ {text}"
-        tokens = self._sp_indic_en.encode(prefixed, out_type=str)
+        tokens = self._sp_indic_en_src.encode(prefixed, out_type=str)
         results = self._indic_en.translate_batch(
             [tokens], beam_size=4, max_batch_size=1
         )
-        decoded = self._sp_indic_en.decode(results[0].tokens)
+        decoded = self._sp_indic_en_tgt.decode(results[0].tokens)
         # Strip any residual language tags
         return decoded.replace("__eng_Latn__", "").strip()
 
@@ -252,14 +283,12 @@ class IndicTrans2Engine:
 
     def _eng_to_indic_sync(self, text: str, tgt_lang: str) -> str:
         prefixed = f"__eng_Latn__ {text}"
-        tokens = self._sp_en_indic.encode(prefixed, out_type=str)
-        # BUG FIX: target_prefix must be an f-string so tgt_lang is interpolated
-        # e.g. [["__hin_Deva__"]] not [["__{tgt_lang}__"]]
+        tokens = self._sp_en_indic_src.encode(prefixed, out_type=str)
         results = self._en_indic.translate_batch(
             [tokens], beam_size=4, max_batch_size=1,
             target_prefix=[[f"__{tgt_lang}__"]],
         )
-        decoded = self._sp_en_indic.decode(results[0].tokens)
+        decoded = self._sp_en_indic_tgt.decode(results[0].tokens)
         return decoded.replace(f"__{tgt_lang}__", "").strip()
 
 

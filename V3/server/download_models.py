@@ -37,7 +37,37 @@ def _download_ct2(hf_repo: str, dst_dir: str):
         log.info("  Downloading %s …", fname)
         # NOTE: local_dir_use_symlinks removed — deprecated in huggingface_hub>=0.23
         hf_hub_download(hf_repo, filename=fname, local_dir=dst_dir)
-    log.info("  ✅ %d files downloaded to %s", len(visible_files), dst_dir)
+    
+    # ── Flatten directory structure if files are nested under subdirectories ──
+    import shutil
+    config_found_path = None
+    for root, dirs, files_in_dir in os.walk(dst_dir):
+        if "config.json" in files_in_dir:
+            config_found_path = root
+            break
+            
+    if config_found_path and config_found_path != dst_dir:
+        log.info("  Flattening nested directory structure from %s to %s …", config_found_path, dst_dir)
+        for item in os.listdir(config_found_path):
+            s = os.path.join(config_found_path, item)
+            d = os.path.join(dst_dir, item)
+            if os.path.exists(d):
+                if os.path.isdir(d):
+                    shutil.rmtree(d)
+                else:
+                    os.remove(d)
+            shutil.move(s, dst_dir)
+            
+        # Clean up empty subdirectories (excluding vocab)
+        for item in os.listdir(dst_dir):
+            p = os.path.join(dst_dir, item)
+            if os.path.isdir(p) and item != "vocab":
+                try:
+                    shutil.rmtree(p)
+                except Exception:
+                    pass
+
+    log.info("  ✅ Model files ready in %s", dst_dir)
 
 
 def _verify_model(name: str, path: str) -> bool:
@@ -46,13 +76,22 @@ def _verify_model(name: str, path: str) -> bool:
         import ctranslate2
         import sentencepiece as spm
 
-        sp_path = os.path.join(path, "sentencepiece.model")
-        if os.path.exists(sp_path):
-            sp = spm.SentencePieceProcessor()
-            sp.load(sp_path)
-            log.info("  %s tokenizer OK (%d vocab)", name, sp.vocab_size())
+        sp_src_path = os.path.join(path, "vocab", "model.SRC")
+        sp_tgt_path = os.path.join(path, "vocab", "model.TGT")
+        if os.path.exists(sp_src_path) and os.path.exists(sp_tgt_path):
+            sp_src = spm.SentencePieceProcessor()
+            sp_src.load(sp_src_path)
+            sp_tgt = spm.SentencePieceProcessor()
+            sp_tgt.load(sp_tgt_path)
+            log.info("  %s tokenizers OK (SRC: %d, TGT: %d vocab)", name, sp_src.vocab_size(), sp_tgt.vocab_size())
         else:
-            log.warning("  %s: sentencepiece.model not found at %s", name, sp_path)
+            sp_path = os.path.join(path, "sentencepiece.model")
+            if os.path.exists(sp_path):
+                sp = spm.SentencePieceProcessor()
+                sp.load(sp_path)
+                log.info("  %s tokenizer OK (%d vocab)", name, sp.vocab_size())
+            else:
+                log.warning("  %s: Tokenizer files (model.SRC/model.TGT or sentencepiece.model) not found in %s", name, path)
 
         # Always verify on CPU at build time — GPU not available during build
         t = ctranslate2.Translator(path, device="cpu")

@@ -1,15 +1,3 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# S2S Voice Avatar — Full Stack
-# docker compose up -d          (CPU / single GPU)
-# docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d (multi-GPU)
-#
-# Services:
-#   vexyl-stt   — Indic STT  (built from ghcr.io/vexyl-ai/vexyl-stt)
-#   vllm-omni   — TTS        (vllm/vllm-omni serving k2-fsa/OmniVoice)
-#   orchestrator— Python S2S orchestrator (built locally, using static mock responses for LLM)
-#   frontend    — Nginx + Vite build
-# ─────────────────────────────────────────────────────────────────────────────
-
 x-gpu-device: &gpu-device
   driver: nvidia
   count: 1
@@ -17,20 +5,11 @@ x-gpu-device: &gpu-device
 
 services:
 
-  # ── 1. Vexyl STT ─────────────────────────────────────────────────────────
-  # Built from source: https://github.com/vexyl-ai/vexyl-stt
-  # Exposes a WebSocket server on port 8080.
-  # Protocol: ws://vexyl-stt:8080
-  #   Client sends: { type:"start", lang:"hi-IN" } then binary Int16 PCM @ 16kHz
-  #   Server sends: { type:"final", text:"...", lang:"hi-IN" }
   vexyl-stt:
     build:
       context: https://github.com/vexyl-ai/vexyl-stt.git
       dockerfile: Dockerfile
       args:
-        # HF_TOKEN is required to download ai4bharat/indic-conformer-600m-multilingual.
-        # Set it in .env file or export before building:
-        #   export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxx
         HF_TOKEN: ${HF_TOKEN:?HF_TOKEN is required. Set it in .env or export HF_TOKEN=hf_xxx}
     image: vexyl-stt:local
     container_name: vexyl-stt
@@ -49,10 +28,6 @@ services:
       start_period: 60s
     restart: unless-stopped
 
-  # ── 4. S2S Orchestrator ───────────────────────────────────────────────────
-  # Built from local Dockerfile.server.
-  # Wires: Vexyl STT → IndicTrans2 → LLM → IndicTrans2 → OmniVoice TTS
-  # IndicTrans2 CT2 and OmniVoice models are downloaded at build time into the volume.
   orchestrator:
     build:
       context: .
@@ -85,8 +60,6 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # ── 5. Frontend ───────────────────────────────────────────────────────────
-  # Vite build served by Nginx. Proxies /ws → orchestrator:8765
   frontend:
     build:
       context: .
@@ -100,11 +73,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-# ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   ctranslate2_cache:
-    # IndicTrans2 CT2 models (~2.4 GB) — pre-downloaded at build time
   huggingface_cache:
-    # HuggingFace model weights for LLM + TTS (~10-20 GB depending on models)
   vexyl_model_cache:
-    # Vexyl STT Whisper/ASR model weights
