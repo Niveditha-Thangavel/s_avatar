@@ -46,9 +46,6 @@ services:
       - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/nllb-200-distilled-600M
       - HF_HOME=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
-    volumes:
-      - ctranslate2_cache:/root/.cache/ctranslate2
-      - huggingface_cache:/root/.cache/huggingface
     depends_on:
       vexyl-stt:
         condition: service_healthy
@@ -74,6 +71,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  ctranslate2_cache:
-  huggingface_cache:
   vexyl_model_cache:
