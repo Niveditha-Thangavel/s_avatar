@@ -594,7 +594,7 @@ class PipelineOrchestrator:
                 )
 
                 # Split into chunks (e.g., 20ms chunks) for streaming
-                chunk_size = int(TTS_SAMPLE_RATE * 0.02 * 2)  # 16-bit PCM => 2 bytes per sample
+                chunk_size = int(TTS_SAMPLE_RATE * 0.02 * 4)  # 32-bit float PCM => 4 bytes per sample
                 for i in range(0, len(pcm_bytes), chunk_size):
                     chunk = pcm_bytes[i:i+chunk_size]
                     await self._tts_queue.put(TTSChunk(

@@ -89,7 +89,7 @@ class LocalTTS:
         # ── Fallback: silent PCM ─────────────────────────────────────────
         if not self._ready or self.model is None:
             logger.warning("[LocalTTS] Model not loaded — returning 1s silence for: %s", text)
-            silence = np.zeros(self.sample_rate, dtype=np.int16)
+            silence = np.zeros(self.sample_rate, dtype=np.float32)
             return silence.tobytes()
 
         # ── Normal path: OmniVoice inference ─────────────────────────────
@@ -115,6 +115,6 @@ class LocalTTS:
         # Ensure we have a 1D numpy array
         wav = np.squeeze(wav)
 
-        # Convert float waveform (-1.0 to 1.0) to int16 PCM bytes
-        pcm = (wav * 32767.0).astype(np.int16)
+        # Convert float waveform (-1.0 to 1.0) to float32 PCM bytes
+        pcm = wav.astype(np.float32)
         return pcm.tobytes()
