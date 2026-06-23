@@ -1,4 +1,21 @@
+# docker-compose.gpu.yml — GPU override for multi-GPU hosts
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Gives all available GPUs to both the LLM and TTS services.
+# The orchestrator (IndicTrans2 via CTranslate2) runs CPU-only — no GPU needed.
+
 services:
+  llm:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   vllm-omni:
     deploy:
       resources:
@@ -7,4 +24,3 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-  # Orchestrator has no GPU dependency (CTranslate2 runs CPU-only for IndicTrans2)

@@ -89,7 +89,7 @@ ws.send(JSON.stringify({ type: 'stop' }));
 
 ---
 
-## Client-side PantoMatrix
+## PantoMatrix
 
 After receiving the `blendshape_matrix` message from the server, drive the avatar:
 

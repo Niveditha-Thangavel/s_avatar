@@ -38,6 +38,7 @@ export class BehaviorManager {
       sad:       { breathSpeed: 1.2,  breathAmp: 0.015, swayAmp: 0.008, headBiasY: -0.06 },
       angry:     { breathSpeed: 3.2,  breathAmp: 0.038, swayAmp: 0.012, headBiasY: 0.00 },
       surprised: { breathSpeed: 2.8,  breathAmp: 0.035, swayAmp: 0.025, headBiasY: 0.05 },
+      fearful:   { breathSpeed: 2.2,  breathAmp: 0.028, swayAmp: 0.010, headBiasY: -0.03 },
     };
     // Current interpolated body params
     this._bodyParams = { breathSpeed: 1.8, breathAmp: 0.022, swayAmp: 0.02, headBiasY: 0.00 };

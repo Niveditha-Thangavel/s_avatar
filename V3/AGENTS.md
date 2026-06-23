@@ -3,31 +3,26 @@
 ## Architecture (v2.0)
 
 **Pipeline:**
-Client mic → Vexyl STT (WebSocket) → SentenceBuffer → IndicTrans2 (→EN) → External LLM → IndicTrans2 (→Indic) → vLLM-Omni TTS → PantoMatrix (server-side) → Client speaker + Avatar blendshapes
+Client mic → Vexyl STT (WebSocket) → SentenceBuffer → IndicTrans2 (→EN) → External LLM → IndicTrans2 (→Indic) → vLLM-Omni TTS → **PantoMatrix (server-side)** → blendshape_matrix → Avatar3D (Three.js)
 
 ```
-┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐
-│  Vexyl   │───▶│ Indic→EN│───▶│   LLM    │───▶│  EN→Indic│───▶│vLLM-Omni TTS │
-│   STT    │    │  Trans   │    │(OpenAI)  │    │   Trans  │    │  (streaming) │
-└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────┬───────┘
-     ▲               ▲              ▲               ▲                 │
-audio in         sentence       english        response          PCM chunks
-                  complete       ready          indic                 │
-                                                                ┌──────▼───────┐
-                                                                │ PantoMatrix  │
-                                                                │ (server, via │
-                                                                │  executor)   │
-                                                                └──┬───────┬───┘
-                                                                   │       │
-                                                              audio PCM  blendshape
-                                                              (streamed)  matrix
-                                                                   │       │
-                                                                   ▼       ▼
-                                                              ┌──────────────┐
-                                                              │   Client     │
-                                                              │ (buffer ≤500ms│
-                                                              │  then flush) │
-                                                              └──────┬───────┘
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+│  Vexyl   │───▶│ Indic→EN│───▶│   LLM    │───▶│  EN→Indic│───▶│ OmniVoice│
+│   STT    │    │  Trans   │    │(OpenAI)  │    │   Trans  │    │   TTS    │
+└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
+     ▲               ▲              ▲               ▲               │
+audio in         sentence       english        response         PCM audio
+                  complete       ready          indic           + all chunks
+                                                                     │
+                                                               ┌─────▼──────┐
+                                                               │PantoMatrix │
+                                                               │(server-side│
+                                                               │ Python,    │
+                                                               │ executor)  │
+                                                               └─────┬──────┘
+                                                                     │
+                                                        {blendshape_matrix}
+                                                        over WebSocket
                                                                      │
                                                                ┌─────▼──────┐
                                                                │  Avatar3D  │
@@ -39,29 +34,29 @@ audio in         sentence       english        response          PCM chunks
 - **Sentence-level chunking**: `SentenceBuffer` detects `. ? ! | ।` — no waiting for full utterance
 - **Pipeline parallelism**: Sentence N+1 translates while sentence N plays via TTS
 - **Async stages**: 5 worker tasks connected by `asyncio.Queue` — each runs independently
-- **Cross-fade hints**: Frontend gets `tts_start`/`tts_end` + sequence numbers for gap-free queuing
-- **Server-side PantoMatrix**: After TTS streaming completes, `pantomatrix.py` runs in a thread executor and sends `blendshape_matrix` to the client. The frontend buffers audio chunks up to 500ms, then starts playback when the matrix arrives (perfect sync) or on timeout (close sync — elapsed time maps correctly because audio and matrix share the same duration).
+- **Server-side PantoMatrix**: After all PCM chunks are received from vLLM-Omni, `extract_blendshapes()` runs in a thread executor (non-blocking), then sends the matrix to the client before `tts_end`
+- **Gapless audio**: Frontend schedules PCM chunks via `AudioContext` `nextPlayTime` cursor — no gaps between chunks
 
 ## Server Files
 
 | File | Description |
 |---|---|
-| `server/pantomatrix.py` | ARKit blendshape extraction from PCM audio (30 FPS, 52 shapes) |
 | `server/main.py` | FastAPI — `/ws/s2s` (S2S pipeline), `/health`, `/chat` (debug) |
 | `server/pipeline_orchestrator.py` | `PipelineOrchestrator` + `IndicTrans2Engine` (CT2) + data types |
 | `server/sentence_buffer.py` | `SentenceBuffer` — streaming text fragmentation, auto-flush timer |
+| `server/pantomatrix.py` | `extract_blendshapes()` — 52 ARKit blendshapes at 30 FPS from float32 PCM |
 | `server/download_models.py` | Pre-downloads IndicTrans2 CT2 models (indic-en-1B, en-indic-1B) |
 
 ## Frontend Files
 
 | File | Description |
 |---|---|
-| `main.js` | App entry point — S2SManager wiring, audio buffering (≤500ms for PantoMatrix sync), avatar driving |
-| `src/stt.js` | `S2SManager` — `/ws/s2s` WebSocket client (mic PCM → server, audio PCM ← server) |
+| `main.js` | App entry point — S2SManager wiring, audio scheduling, avatar driving |
+| `src/stt.js` | `S2SManager` — `/ws/s2s` WebSocket client (mic PCM → server, audio + blendshapes ← server) |
 | `src/avatar3d.js` | `Avatar3D` — Three.js 3D avatar, blendshape animation matrix, emotion morphs |
-| `src/behavior.js` | `BehaviorManager` — procedural idle: breathing, blink, gaze, emotion-driven body |
-| `avatar-widget.js` | `AvatarWidget` — embeddable standalone widget with full PantoMatrix support |
-| `widget-demo.html` | Demo page for the widget — wired to `/ws/s2s` |
+| `src/behavior.js` | `BehaviorManager` — procedural idle: breathing, blink, gaze, emotion-driven body (6 emotions) |
+| `avatar-widget.js` | `AvatarWidget` — embeddable standalone widget with full blendshape + emotion support |
+| `widget-demo.html` | Demo page for the widget — wired to `/ws/s2s`, receives server blendshape matrix |
 
 ## External Services
 
@@ -86,33 +81,41 @@ audio in         sentence       english        response          PCM chunks
 ### Server → Client
 | Message | Description |
 |---|---|
-| `{"type":"transcript","text":"...","lang":"..."}` | Real-time STT transcript |
+| `{"type":"transcript","text":"...","lang":"..."}` | Real-time STT transcript from Vexyl |
 | `{"type":"tts_start","seq":1,"text":"...","lang":"..."}` | TTS beginning for sentence seq |
-| `{"type":"audio_chunk","seq":1,"sample_rate":24000,"byte_length":8192}` | Audio metadata → followed by binary float32 PCM |
-| `[binary float32 PCM]` | Raw audio data for current sentence |
-| `{"type":"blendshape_matrix","seq":1,"matrix":[...]}` | 30 FPS ARKit blendshape frames from server-side PantoMatrix |
-| `{"type":"tts_end","seq":1}` | TTS complete for this sentence |
-| `{"type":"pipeline_status","session_id":"...","seq":2,"lang":"..."}` | Health heartbeat (every 2s) |
-| `{"type":"error","message":"..."}` | Error |
+| `{"type":"audio_chunk","seq":1,"sample_rate":24000,"byte_length":N}` | Audio metadata → followed by binary float32 PCM |
+| `[binary float32 PCM]` | Raw audio data (one chunk per audio_chunk message) |
+| `{"type":"blendshape_matrix","seq":1,"matrix":[...]}` | 30 FPS ARKit blendshape matrix for lip-sync, sent after all audio chunks |
+| `{"type":"tts_end","seq":1}` | Sentence fully transmitted (audio + blendshapes) |
+| `{"type":"pipeline_status","session_id":"...","seq":2,"lang":"..."}` | Health heartbeat every 2s |
+| `{"type":"error","message":"..."}` | Pipeline error |
 
 ## PantoMatrix (Server-side)
 
-The `extract_blendshapes(audio_bytes, sample_rate)` function in `server/pantomatrix.py` processes the complete PCM audio for a sentence and returns 30 FPS ARKit blendshape frames:
-- Sub-band energy classification → 7 phoneme classes per frame
-- Each class maps to a fixed 52-blendshape ARKit target pose
-- Linear cross-fade between class transitions (3 frames)
-- Runs in a `run_in_executor` thread after all TTS chunks have been streamed to the client
+`server/pantomatrix.py` — `extract_blendshapes(audio_bytes: bytes, sample_rate: int) → List[dict]`
 
-The frontend (`main.js`) buffers incoming audio chunks for up to 500ms. When `blendshape_matrix` arrives, the buffer is flushed simultaneously with `avatar.setAnimationMatrix()` — giving perfect audio-animation sync. If the 500ms timeout fires (e.g., matrix delayed), playback starts anyway; the `elapsed = audioContext.currentTime - audioStartTime` calculation naturally maps to the correct position in the matrix since audio duration equals matrix duration.
+- Runs in `loop.run_in_executor(None, ...)` inside `_generate_tts` — does not block the asyncio event loop
+- Input: all PCM chunks for a sentence concatenated into one `bytes` buffer (float32 LE)
+- Output: `[{"time": float, "blendshapes": {name: weight}}, ...]` at 30 FPS
+- Algorithm: sub-band energy → 7 phoneme classes → linear cross-fade (3 frames) → ARKit poses
+- Eye blink, gaze saccade, brow tracks included in every frame
+- Sent as `{"type":"blendshape_matrix", "seq": N, "matrix": [...]}` before `tts_end`
 
 ## Emotion System
 
-All 6 emotions are fully implemented:
-- `BehaviorManager` (`src/behavior.js`) — interpolates body params (breathing speed/amplitude, head sway) and blendshape weights per emotion
-- `Avatar3D.setEmotion()` (`src/avatar3d.js`) — immediately forces morph targets on the mesh
-- Emotions: `neutral`, `happy`, `sad`, `angry`, `surprised`, `fearful`
-- During speech: emotion morphs are dormant (server matrix drives all blendshapes)
-- During idle: emotion weights lerp smoothly via `BehaviorManager`
+All 6 emotions fully implemented across all layers:
+
+| Emotion | BehaviorManager body params | Avatar3D morph targets |
+|---|---|---|
+| neutral | breathSpeed 1.8, swayAmp 0.02 | all zeros |
+| happy | breathSpeed 2.4, swayAmp 0.035, headBiasY +0.04 | mouthSmile, cheekSquint, browOuterUp |
+| sad | breathSpeed 1.2, swayAmp 0.008, headBiasY -0.06 | mouthFrown, browInnerUp, browDown |
+| angry | breathSpeed 3.2, swayAmp 0.012 | browDown, eyeSquint, mouthFrown, noseSneer |
+| surprised | breathSpeed 2.8, swayAmp 0.025, headBiasY +0.05 | eyeWide, browInnerUp, browOuterUp, mouthShrug |
+| fearful | breathSpeed 2.2, swayAmp 0.010, headBiasY -0.03 | eyeWide, browInnerUp, browOuterUp, mouthFrown |
+
+- During speech: emotion morphs are dormant (blendshape_matrix drives all shapes)
+- During idle: `BehaviorManager.emotionWeights` lerp smoothly at 5 rad/s
 
 ## Cache Locations
 - IndicTrans2 CT2: `~/.cache/ctranslate2/en-indic-1B/` and `~/.cache/ctranslate2/indic-en-1B/` (~2.4GB total)
@@ -147,11 +150,13 @@ npm run dev
 ```
 
 ## Ports
-- Backend orchestrator: 8765 (uvicorn)
-- Vexyl STT: 8080
-- vLLM-Omni TTS: 8091
-- LLM endpoint: 8000
-- Frontend (Vite dev): 3005
+| Service | Port |
+|---|---|
+| Backend orchestrator | 8765 |
+| Vexyl STT | 8080 |
+| vLLM-Omni TTS | 8091 |
+| LLM endpoint | 8000 |
+| Frontend (Vite dev) | 3005 |
 
 ## Removed / Deprecated
 - `server/stt_engine.py` — old Faster-Whisper STT (replaced by Vexyl STT)

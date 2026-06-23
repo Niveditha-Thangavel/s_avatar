@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# docker-commands.sh — Helper commands for the S2S Voice Avatar Docker setup
+# docker-commands.sh — Helper commands for the S2S Voice Avatar full stack
+#
+# Single-command startup:
+#   ./docker-commands.sh up        (1x GPU — default)
+#   ./docker-commands.sh up-gpu    (all GPUs)
 
 set -euo pipefail
 
@@ -7,21 +11,29 @@ SERVER_URL="${SERVER_URL:-http://localhost:8765}"
 
 case "${1:-help}" in
 
-  build)
-    echo "=== Building Docker images ==="
-    docker compose build
-    ;;
-
   up)
-    echo "=== Starting all services ==="
+    echo "=== Starting full S2S stack (1x GPU) ==="
+    echo "Services: vexyl-stt | llm | vllm-omni | orchestrator | frontend"
     docker compose up -d
-    echo "Orchestrator:  http://localhost:8765"
-    echo "Frontend:      http://localhost:3005"
+    echo ""
+    echo "Frontend:     http://localhost:3005"
+    echo "Orchestrator: http://localhost:8765/health"
+    echo "LLM:          http://localhost:8000/health"
+    echo "TTS:          http://localhost:8091/health"
+    echo "STT:          ws://localhost:8080"
+    echo ""
+    echo "Tail logs:    ./docker-commands.sh logs"
     ;;
 
   up-gpu)
-    echo "=== Starting all services (GPU) ==="
+    echo "=== Starting full S2S stack (all GPUs) ==="
     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+    ;;
+
+  build)
+    echo "=== Building local images ==="
+    echo "(vexyl-stt is built from GitHub source — needs internet on first run)"
+    docker compose build
     ;;
 
   down)
@@ -29,12 +41,33 @@ case "${1:-help}" in
     docker compose down
     ;;
 
+  restart)
+    SERVICE="${2:-}"
+    if [[ -n "$SERVICE" ]]; then
+      echo "=== Restarting $SERVICE ==="
+      docker compose restart "$SERVICE"
+    else
+      echo "=== Restarting all services ==="
+      docker compose restart
+    fi
+    ;;
+
   logs)
-    docker compose logs -f --tail=100 "${2:-orchestrator}"
+    SERVICE="${2:-}"
+    if [[ -n "$SERVICE" ]]; then
+      docker compose logs -f --tail=100 "$SERVICE"
+    else
+      docker compose logs -f --tail=50
+    fi
+    ;;
+
+  status)
+    echo "=== Service status ==="
+    docker compose ps
     ;;
 
   health)
-    echo "--- GET /health ---"
+    echo "--- Orchestrator /health ---"
     curl -sf "${SERVER_URL}/health" | python3 -m json.tool
     ;;
 
@@ -47,15 +80,27 @@ case "${1:-help}" in
     ;;
 
   help|*)
-    echo "Usage: $0 <command>"
-    echo ""
-    echo "Commands:"
-    echo "  build       Build all Docker images"
-    echo "  up          Start all services (CPU)"
-    echo "  up-gpu      Start all services (GPU override)"
-    echo "  down        Stop all services"
-    echo "  logs [svc]  Tail logs (default: orchestrator)"
-    echo "  health      GET /health"
-    echo "  chat [text] POST /chat translation debug"
+    cat <<EOF
+Usage: $0 <command> [args]
+
+Commands:
+  up              Start all services (1x GPU)
+  up-gpu          Start all services (all GPUs)
+  build           Build local Docker images
+  down            Stop all services
+  restart [svc]   Restart all or a specific service
+  logs [svc]      Tail logs (all or specific service)
+  status          Show running containers
+  health          GET /health from orchestrator
+  chat [text]     POST /chat translation debug
+
+Services: vexyl-stt, llm, vllm-omni, orchestrator, frontend
+
+First-time setup:
+  1. cp .env.example .env
+  2. Add HF_TOKEN to .env (needed for model downloads)
+  3. ./docker-commands.sh build
+  4. ./docker-commands.sh up
+EOF
     ;;
 esac

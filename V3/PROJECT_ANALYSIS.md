@@ -5,7 +5,7 @@
 **Backend:** Python 3.11 + FastAPI + uvicorn (port 8765)  
 **Frontend:** Vite 8 + Three.js (port 3005, proxied to backend)  
 **Voice Pipeline:** Vexyl STT → IndicTrans2 (CTranslate2) → External LLM → IndicTrans2 → vLLM-Omni TTS  
-**Lip-sync:** Client-side PantoMatrix (JS port in `main.js`) extracts 30 FPS ARKit blendshapes from received PCM  
+**Lip-sync:** Server-side PantoMatrix (`server/pantomatrix.py`) runs in a thread executor after TTS streaming, sends `blendshape_matrix` over WebSocket at 30 FPS ARKit blendshapes  
 **Container:** Docker with multi-arch (CPU + GPU/CUDA 12.4)
 
 ---

@@ -1,8 +1,133 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# S2S Voice Avatar — Full Stack
+# docker compose up -d          (CPU / single GPU)
+# docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d (multi-GPU)
+#
+# Services:
+#   vexyl-stt   — Indic STT  (built from ghcr.io/vexyl-ai/vexyl-stt)
+#   llm         — LLM brain  (vllm/vllm-openai serving granite-4.0-nano)
+#   vllm-omni   — TTS        (vllm/vllm-omni serving k2-fsa/OmniVoice)
+#   orchestrator— Python S2S orchestrator (built locally)
+#   frontend    — Nginx + Vite build
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-gpu-device: &gpu-device
+  driver: nvidia
+  count: 1
+  capabilities: [gpu]
+
 services:
+
+  # ── 1. Vexyl STT ─────────────────────────────────────────────────────────
+  # Built from source: https://github.com/vexyl-ai/vexyl-stt
+  # Exposes a WebSocket server on port 8080.
+  # Protocol: ws://vexyl-stt:8080
+  #   Client sends: { type:"start", lang:"hi-IN" } then binary Int16 PCM @ 16kHz
+  #   Server sends: { type:"final", text:"...", lang:"hi-IN" }
+  vexyl-stt:
+    build:
+      context: https://github.com/vexyl-ai/vexyl-stt.git
+      dockerfile: Dockerfile
+    image: vexyl-stt:local
+    container_name: vexyl-stt
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - VEXYL_STT_PORT=8080
+    volumes:
+      - vexyl_model_cache:/root/.cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # ── 2. LLM (vLLM OpenAI-compatible) ──────────────────────────────────────
+  # Image: vllm/vllm-openai (official, 10M+ pulls)
+  # Serves Granite 4.0 Nano — change LLM_MODEL env to swap models.
+  # Requires GPU. For CPU-only testing, replace with a lighter model or mock.
+  llm:
+    image: vllm/vllm-openai:latest
+    container_name: avatar-llm
+    ports:
+      - "8000:8000"
+    command:
+      - "--model"
+      - "${LLM_MODEL:-ibm-granite/granite-4.0-nano}"
+      - "--port"
+      - "8000"
+      - "--host"
+      - "0.0.0.0"
+      - "--trust-remote-code"
+      - "--api-key"
+      - "${LLM_API_KEY:-sk-no-key-required}"
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - *gpu-device
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
+  # ── 3. vLLM-Omni TTS ─────────────────────────────────────────────────────
+  # Image: vllm/vllm-omni (official, 100K+ pulls on Docker Hub)
+  # Serves k2-fsa/OmniVoice via OpenAI-compatible /v1/audio/speech endpoint.
+  # Requires GPU with at least 8GB VRAM.
+  vllm-omni:
+    image: vllm/vllm-omni:latest
+    container_name: vllm-omni
+    ports:
+      - "8091:8091"
+    command:
+      - "vllm"
+      - "serve"
+      - "k2-fsa/OmniVoice"
+      - "--omni"
+      - "--port"
+      - "8091"
+      - "--host"
+      - "0.0.0.0"
+      - "--trust-remote-code"
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - *gpu-device
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8091/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: unless-stopped
+
+  # ── 4. S2S Orchestrator ───────────────────────────────────────────────────
+  # Built from local Dockerfile.server.
+  # Wires: Vexyl STT → IndicTrans2 → LLM → IndicTrans2 → OmniVoice TTS
+  # IndicTrans2 CT2 models are downloaded at build time into the volume.
   orchestrator:
     build:
       context: .
       dockerfile: Dockerfile.server
+    image: avatar-orchestrator:local
     container_name: avatar-orchestrator
     ports:
       - "8765:8765"
@@ -11,55 +136,37 @@ services:
       - TOKENIZERS_PARALLELISM=false
       - VEXYL_STT_URL=ws://vexyl-stt:8080
       - LLM_BASE_URL=http://llm:8000/v1
-      - LLM_API_KEY=sk-no-key-required
+      - LLM_API_KEY=${LLM_API_KEY:-sk-no-key-required}
+      - LLM_MODEL=${LLM_MODEL:-ibm-granite/granite-4.0-nano}
       - TTS_BASE_URL=http://vllm-omni:8091/v1
+      - TTS_MODEL=k2-fsa/OmniVoice
+      - TTS_VOICE=${TTS_VOICE:-default}
+      - INDIC_TRANS2_EN_INDIC=/root/.cache/ctranslate2/en-indic-1B
+      - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/indic-en-1B
     volumes:
       - ctranslate2_cache:/root/.cache/ctranslate2
-    restart: unless-stopped
+    depends_on:
+      vexyl-stt:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+      vllm-omni:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8765/health"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
-    depends_on:
-      vexyl-stt:
-        condition: service_started
-      vllm-omni:
-        condition: service_started
-
-  vexyl-stt:
-    image: vexyl/vexyl-stt:latest
-    container_name: vexyl-stt
-    ports:
-      - "8080:8080"
-    environment:
-      - VEXYL_STT_PORT=8080
     restart: unless-stopped
 
-  vllm-omni:
-    image: vllm/vllm-omni:latest
-    container_name: vllm-omni
-    ports:
-      - "8091:8091"
-    command: ["vllm", "serve", "k2-fsa/OmniVoice", "--omni", "--port", "8091", "--trust-remote-code"]
-    environment:
-      - HF_HOME=/root/.cache/huggingface
-    volumes:
-      - huggingface_cache:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    restart: unless-stopped
-
+  # ── 5. Frontend ───────────────────────────────────────────────────────────
+  # Vite build served by Nginx. Proxies /ws → orchestrator:8765
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+    image: avatar-frontend:local
     container_name: avatar-frontend
     ports:
       - "3005:80"
@@ -68,6 +175,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+# ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   ctranslate2_cache:
+    # IndicTrans2 CT2 models (~2.4 GB) — pre-downloaded at build time
   huggingface_cache:
+    # HuggingFace model weights for LLM + TTS (~10-20 GB depending on models)
+  vexyl_model_cache:
+    # Vexyl STT Whisper/ASR model weights
