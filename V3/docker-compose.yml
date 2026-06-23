@@ -27,6 +27,11 @@ services:
     build:
       context: https://github.com/vexyl-ai/vexyl-stt.git
       dockerfile: Dockerfile
+      args:
+        # HF_TOKEN is required to download ai4bharat/indic-conformer-600m-multilingual.
+        # Set it in .env file or export before building:
+        #   export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxx
+        HF_TOKEN: ${HF_TOKEN:?HF_TOKEN is required. Set it in .env or export HF_TOKEN=hf_xxx}
     image: vexyl-stt:local
     container_name: vexyl-stt
     ports:

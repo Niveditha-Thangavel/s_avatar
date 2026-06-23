@@ -29,3 +29,6 @@ server/venv/
 server/__pycache__/
 server/*.pyc
 __pycache__/
+
+# Secrets — never commit tokens
+.env
