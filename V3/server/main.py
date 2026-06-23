@@ -31,14 +31,11 @@ from server.pipeline_orchestrator import (
     LLM_BASE_URL,
     LLM_API_KEY,
     LLM_MODEL,
-    TTS_BASE_URL,
-    TTS_API_KEY,
-    TTS_MODEL,
-    TTS_VOICE,
     INDIC_TRANS2_EN_INDIC,
     INDIC_TRANS2_INDIC_EN,
     TRANSLATION_DEVICE,
 )
+from server.local_tts import LocalTTS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,13 +45,14 @@ logger = logging.getLogger(__name__)
 
 # ── Global engine instances ──────────────────────────────────────────────────
 _trans_engine: IndicTrans2Engine = None
+_tts_engine: LocalTTS = None
 
 
 # ── Startup / shutdown ───────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _trans_engine
+    global _trans_engine, _tts_engine
     logger.info("[Server] Initialising IndicTrans2 engine …")
     _trans_engine = IndicTrans2Engine(
         en_indic_path=INDIC_TRANS2_EN_INDIC,
@@ -63,6 +61,10 @@ async def lifespan(app: FastAPI):
     )
     await _trans_engine.load()
     logger.info("[Server] ✅ IndicTrans2 ready")
+
+    logger.info("[Server] Initialising LocalTTS engine (k2-fsa/OmniVoice) …")
+    _tts_engine = LocalTTS()
+    logger.info("[Server] ✅ LocalTTS ready")
     yield
     logger.info("[Server] Shutdown")
 
@@ -88,13 +90,13 @@ async def health():
             "translator": "loaded" if (_trans_engine and _trans_engine._loaded) else "loading",
             "vexyl_stt": VEXYL_STT_URL,
             "llm": "disabled (using static mock responses)",
-            "tts": f"{TTS_BASE_URL}/audio/speech",
+            "tts": "loaded (local omnivoice)" if _tts_engine else "loading",
         },
         "models": {
             "indic_en": INDIC_TRANS2_INDIC_EN,
             "en_indic": INDIC_TRANS2_EN_INDIC,
             "llm": "disabled",
-            "tts": TTS_MODEL,
+            "tts": "k2-fsa/OmniVoice",
         },
     }
 
@@ -128,7 +130,10 @@ async def ws_s2s(websocket: WebSocket):
             "[S2S-WS] Starting session %s lang=%s", session_id, lang
         )
 
-        orchestrator = PipelineOrchestrator(trans_engine=_trans_engine)
+        orchestrator = PipelineOrchestrator(
+            trans_engine=_trans_engine,
+            tts_engine=_tts_engine,
+        )
         await orchestrator.run(websocket, session_id, lang)
 
     except WebSocketDisconnect:

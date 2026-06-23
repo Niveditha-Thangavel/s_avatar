@@ -244,22 +244,15 @@ class PipelineOrchestrator:
         llm_base_url: str = LLM_BASE_URL,
         llm_api_key: str = LLM_API_KEY,
         llm_model: str = LLM_MODEL,
-        tts_base_url: str = TTS_BASE_URL,
-        tts_api_key: str = TTS_API_KEY,
-        tts_model: str = TTS_MODEL,
-        tts_voice: str = TTS_VOICE,
         trans_engine: Optional[IndicTrans2Engine] = None,
+        tts_engine: Optional[LocalTTS] = None,
     ):
         self._vexyl_url = vexyl_url
         self._vexyl_api_key = vexyl_api_key
         self._llm_base_url = llm_base_url.rstrip("/")
         self._llm_api_key = llm_api_key
         self._llm_model = llm_model
-        self._tts_base_url = tts_base_url.rstrip("/")
-        self._tts_api_key = tts_api_key
-        self._tts_model = tts_model
-        self._tts_voice = tts_voice
-        self._local_tts = LocalTTS()  # Initialize local TTS stub
+        self._local_tts = tts_engine or LocalTTS()
         self._trans = trans_engine or IndicTrans2Engine()
 
         # Pipeline queues
