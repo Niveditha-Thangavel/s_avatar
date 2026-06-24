@@ -232,6 +232,12 @@ async def chat_endpoint(req: ChatRequest):
     }
 
 
+class SpeakRequest(BaseModel):
+    text: str = ""
+    lang: str = "en"
+    speed: float = 1.0
+
+
 # ── TTS Endpoint ───────────────────────────────────────────────────────────────
 
 @app.post("/tts")
@@ -430,12 +436,6 @@ def _apply_emotion_to_matrix(matrix: list, llm_emotion: str, inline_tokens: list
                     bs[shape] = max(bs.get(shape, 0.0), min_val)
 
     return matrix
-
-
-class SpeakRequest(BaseModel):
-    text: str = ""
-    lang: str = "en"
-    speed: float = 1.0
 
 
 @app.post("/speak/{emotion}")
