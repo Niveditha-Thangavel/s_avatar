@@ -4,8 +4,7 @@
  * Connects to the server's /ws/s2s WebSocket endpoint and manages the full
  * pipeline for a session:
  *
- *   Client mic (PCM) → /ws/s2s → Vexyl STT → IndicTrans2 → LLM
- *                                           → IndicTrans2 → vLLM-Omni TTS → Client speaker
+ *   Client mic (PCM) → /ws/s2s → Vexyl STT → IndicTrans2 Translation → OmniVoice TTS → Client speaker
  *
  * Protocol:
  *   Client → Server:

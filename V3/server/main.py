@@ -53,9 +53,6 @@ from server.pipeline_orchestrator import (
     IndicTrans2Engine,
     PipelineOrchestrator,
     VEXYL_STT_URL,
-    LLM_BASE_URL,
-    LLM_API_KEY,
-    LLM_MODEL,
     INDIC_TRANS2_EN_INDIC,
     INDIC_TRANS2_INDIC_EN,
     TRANSLATION_DEVICE,
@@ -138,14 +135,12 @@ async def health():
         "services": {
             "translator": "loaded" if (_trans_engine and _trans_engine._loaded) else "loading",
             "vexyl_stt": VEXYL_STT_URL,
-            "llm": "disabled (using static mock responses)",
             "tts": ("loaded (local omnivoice)" if (_tts_engine and _tts_engine.is_ready)
                     else "degraded (silent fallback)"),
         },
         "models": {
             "indic_en": INDIC_TRANS2_INDIC_EN,
             "en_indic": INDIC_TRANS2_EN_INDIC,
-            "llm": "disabled",
             "tts": "k2-fsa/OmniVoice",
         },
     }
@@ -217,26 +212,21 @@ class ChatRequest(BaseModel):
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     """
-    Simple text → translation → TTS (one-shot, no streaming).
-    Useful for debugging the translation pipeline.
+    Simple text → translation debug endpoint.
+    Translates English input to Indic language.
     """
     if not req.text.strip():
         return {"error": "Empty text"}
 
-    flores_src = "hin_Deva"
-    if req.lang == "en":
-        flores_src = "eng_Latn"
-
-    # Translate to English if needed
-    english = req.text
-    if flores_src != "eng_Latn":
-        english = await _trans_engine.indic_to_eng(req.text, flores_src)
+    # Translate from English to target language
+    flores_tgt = _to_flores(req.lang)
+    translated = await _trans_engine.eng_to_indic(req.text, flores_tgt)
 
     return {
         "original": req.text,
-        "english": english,
-        "stub": "LLM + TTS bypassed in debug mode",
-        "note": "Use /ws/s2s for full pipeline",
+        "translated": translated,
+        "lang": req.lang,
+        "flores_tgt": flores_tgt,
     }
 
 

@@ -42,7 +42,7 @@
               <h1>3D Digital Human</h1>
             </div>
             <p class="header-desc">
-              S2S pipeline: Vexyl STT → IndicTrans2 → LLM → IndicTrans2 → OmniVoice TTS.
+              S2S pipeline: Vexyl STT → IndicTrans2 translation → OmniVoice TTS.
               PantoMatrix lip-sync runs server-side on generated audio.
             </p>
           </header>
@@ -51,8 +51,8 @@
           <div class="control-group">
             <h3>🎤 Voice Input (S2S)</h3>
             <p class="settings-hint">
-              Speak in your Indic language. Vexyl STT transcribes, IndicTrans2 translates,
-              the LLM responds, and OmniVoice speaks the reply back — with PantoMatrix lip-sync.
+              Speak in your Indic language. Vexyl STT transcribes, the pipeline selects a response,
+              translates it, and OmniVoice speaks the reply back — with PantoMatrix lip-sync.
             </p>
             <div class="row">
               <button id="btn-mic" class="btn btn-primary">

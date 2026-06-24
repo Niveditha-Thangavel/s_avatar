@@ -85,8 +85,7 @@ class SentenceEvent:
     """A complete sentence flowing through the pipeline."""
     seq: int
     source_text: str           # original Indic text from STT
-    english_text: str = ""     # after Indic→English translation
-    response_text: str = ""    # after LLM
+    response_text: str = ""    # static English response
     indic_text: str = ""       # after English→Indic translation
     lang: str = ""
     stage_timing: dict = field(default_factory=dict)
@@ -293,17 +292,11 @@ class PipelineOrchestrator:
         self,
         vexyl_url: str = VEXYL_STT_URL,
         vexyl_api_key: str = VEXYL_STT_API_KEY,
-        llm_base_url: str = LLM_BASE_URL,
-        llm_api_key: str = LLM_API_KEY,
-        llm_model: str = LLM_MODEL,
         trans_engine: Optional[IndicTrans2Engine] = None,
         tts_engine: Optional[LocalTTS] = None,
     ):
         self._vexyl_url = vexyl_url
         self._vexyl_api_key = vexyl_api_key
-        self._llm_base_url = llm_base_url.rstrip("/")
-        self._llm_api_key = llm_api_key
-        self._llm_model = llm_model
         self._local_tts = tts_engine or LocalTTS()
         self._trans = trans_engine or IndicTrans2Engine()
 
@@ -311,8 +304,6 @@ class PipelineOrchestrator:
         self._audio_out: asyncio.Queue = asyncio.Queue()     # bytes → client
         self._stt_out: asyncio.Queue = asyncio.Queue()       # str ← Vexyl
         self._sentences: asyncio.Queue = asyncio.Queue()     # SentenceEvent
-        self._english_queue: asyncio.Queue = asyncio.Queue()  # SentenceEvent
-        self._response_queue: asyncio.Queue = asyncio.Queue()  # SentenceEvent
         self._indic_queue: asyncio.Queue = asyncio.Queue()    # SentenceEvent
         self._tts_queue: asyncio.Queue = asyncio.Queue()      # TTSChunk
 
@@ -349,9 +340,7 @@ class PipelineOrchestrator:
         # Launch pipeline workers
         workers = [
             asyncio.create_task(self._stt_worker(client_ws)),
-            asyncio.create_task(self._trans1_worker()),
-            asyncio.create_task(self._llm_worker()),
-            asyncio.create_task(self._trans2_worker()),
+            asyncio.create_task(self._pipeline_worker()),
             asyncio.create_task(self._tts_worker(client_ws)),
             asyncio.create_task(self._audio_sender(client_ws)),
             asyncio.create_task(self._monitor_worker(client_ws)),
@@ -528,10 +517,10 @@ class PipelineOrchestrator:
         finally:
             buf.close()
 
-    # ── Stage 2: Indic → English Translation ────────────────────────────────
+    # ── Stage 2: Pipeline Worker (Static Translation Response) ──────────────
 
-    async def _trans1_worker(self):
-        """Take Indic sentences, translate to English, push downstream."""
+    async def _pipeline_worker(self):
+        """Take input sentences, retrieve static response, translate directly to Indic, and push to TTS."""
         try:
             while not self._cancel.is_set():
                 try:
@@ -542,60 +531,23 @@ class PipelineOrchestrator:
                     continue
 
                 t0 = time.monotonic()
-                english = await self._trans.indic_to_eng(
-                    event.source_text, self._flores_src
-                )
-                event.english_text = english
-                event.stage_timing["trans1_done"] = time.monotonic() - t0
-                await self._english_queue.put(event)
-
-        except asyncio.CancelledError:
-            pass
-
-    # ── Stage 3: LLM ────────────────────────────────────────────────────────
-
-    async def _llm_worker(self):
-        """Take English sentences, use a static test response, push downstream."""
-        try:
-            while not self._cancel.is_set():
-                try:
-                    event = await asyncio.wait_for(
-                        self._english_queue.get(), timeout=0.3
-                    )
-                except asyncio.TimeoutError:
-                    continue
-
-                t0 = time.monotonic()
+                # 1. Select the next static response in English
                 resp_text = next(_static_response_cycle)
                 event.response_text = resp_text
-                event.stage_timing["llm_done"] = time.monotonic() - t0
-                await self._response_queue.put(event)
 
-        except asyncio.CancelledError:
-            pass
-
-    # ── Stage 4: English → Indic Translation ────────────────────────────────
-
-    async def _trans2_worker(self):
-        """Take English responses, translate to Indic, push downstream."""
-        try:
-            while not self._cancel.is_set():
-                try:
-                    event = await asyncio.wait_for(
-                        self._response_queue.get(), timeout=0.3
-                    )
-                except asyncio.TimeoutError:
-                    continue
-
-                t0 = time.monotonic()
+                # 2. Translate English response -> Indic response directly
                 indic_response = await self._trans.eng_to_indic(
-                    event.response_text, self._flores_src
+                    resp_text, self._flores_src
                 )
+
+                # 3. Format suffix to show user's input
                 suffix = _YOU_SAID_TEMPLATES.get(
                     self._lang_bcp47, "(You said: {text})"
                 ).format(text=event.source_text)
                 event.indic_text = f"{indic_response} {suffix}"
-                event.stage_timing["trans2_done"] = time.monotonic() - t0
+                event.stage_timing["pipeline_done"] = time.monotonic() - t0
+
+                # 4. Push directly to TTS queue
                 await self._indic_queue.put(event)
 
         except asyncio.CancelledError:
