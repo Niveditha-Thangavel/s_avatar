@@ -1,9 +1,10 @@
 """
-download_models.py — Pre-download NLLB-200 translation and OmniVoice TTS models at build time.
+download_models.py — Pre-download IndicTrans2 translation and OmniVoice TTS models at build time.
 
 Downloads:
-  1. JustFrederik/nllb-200-distilled-600M-ct2-int8 (~600 MB)
-  2. k2-fsa/OmniVoice (~1.2 GB)
+  1. adalat-ai/ct2-rotary-indictrans2-en-indic-dist-200M
+  2. adalat-ai/ct2-rotary-indictrans2-indic-en-dist-200M
+  3. k2-fsa/OmniVoice (~1.2 GB)
 """
 
 import logging
@@ -18,8 +19,11 @@ CT2_CACHE = os.environ.get(
     os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2"),
 )
 
-_NLLB_MODEL = "JustFrederik/nllb-200-distilled-600M-ct2-int8"
-_NLLB_DST = os.path.join(CT2_CACHE, "nllb-200-distilled-600M")
+_EN_INDIC_MODEL = "adalat-ai/ct2-rotary-indictrans2-en-indic-dist-200M"
+_EN_INDIC_DST = os.path.join(CT2_CACHE, "ct2-rotary-indictrans2-en-indic-dist-200M")
+
+_INDIC_EN_MODEL = "adalat-ai/ct2-rotary-indictrans2-indic-en-dist-200M"
+_INDIC_EN_DST = os.path.join(CT2_CACHE, "ct2-rotary-indictrans2-indic-en-dist-200M")
 
 
 def _download_ct2(hf_repo: str, dst_dir: str):
@@ -35,6 +39,8 @@ def _download_ct2(hf_repo: str, dst_dir: str):
     
     # ── Flatten directory structure if files are nested under subdirectories ──
     import shutil
+    top_dirs_before = [d for d in os.listdir(dst_dir) if os.path.isdir(os.path.join(dst_dir, d)) and d != "vocab"]
+    
     config_found_path = None
     for root, dirs, files_in_dir in os.walk(dst_dir):
         if "config.json" in files_in_dir:
@@ -54,9 +60,9 @@ def _download_ct2(hf_repo: str, dst_dir: str):
             shutil.move(s, dst_dir)
             
         # Clean up empty subdirectories
-        for item in os.listdir(dst_dir):
-            p = os.path.join(dst_dir, item)
-            if os.path.isdir(p):
+        for d in top_dirs_before:
+            p = os.path.join(dst_dir, d)
+            if os.path.exists(p) and os.path.isdir(p) and d != "vocab":
                 try:
                     shutil.rmtree(p)
                 except Exception:
@@ -71,17 +77,19 @@ def _verify_model(name: str, path: str) -> bool:
         import ctranslate2
         import sentencepiece as spm
 
-        # Look for sentencepiece.bpe.model (NLLB) or sentencepiece.model
-        sp_path = os.path.join(path, "sentencepiece.bpe.model")
-        if not os.path.exists(sp_path):
-            sp_path = os.path.join(path, "sentencepiece.model")
-            
-        if os.path.exists(sp_path):
+        # Look for vocab/model.SRC and model.TGT (IndicTrans2)
+        sp_src = os.path.join(path, "vocab", "model.SRC")
+        sp_tgt = os.path.join(path, "vocab", "model.TGT")
+        
+        if os.path.exists(sp_src) and os.path.exists(sp_tgt):
             sp = spm.SentencePieceProcessor()
-            sp.load(sp_path)
-            log.info("  %s tokenizer OK (%d vocab)", name, sp.vocab_size())
+            sp.load(sp_src)
+            log.info("  %s source tokenizer OK (%d vocab)", name, sp.vocab_size())
+            sp2 = spm.SentencePieceProcessor()
+            sp2.load(sp_tgt)
+            log.info("  %s target tokenizer OK (%d vocab)", name, sp2.vocab_size())
         else:
-            log.warning("  %s: Tokenizer file not found in %s", name, path)
+            log.warning("  %s: Tokenizer files not found in %s/vocab", name, path)
 
         # Always verify on CPU at build time — GPU not available during build
         t = ctranslate2.Translator(path, device="cpu")
@@ -95,23 +103,30 @@ def _verify_model(name: str, path: str) -> bool:
 def main():
     os.makedirs(CT2_CACHE, exist_ok=True)
 
-    # ── 1. NLLB Translation Model ──
-    if not os.path.exists(os.path.join(_NLLB_DST, "model.bin")):
-        log.info("[1/2] Downloading %s → %s", _NLLB_MODEL, _NLLB_DST)
-        _download_ct2(_NLLB_MODEL, _NLLB_DST)
+    # ── 1. IndicTrans2 Distilled Translation Models ──
+    log.info("[1/3] Downloading %s → %s", _EN_INDIC_MODEL, _EN_INDIC_DST)
+    if not os.path.exists(os.path.join(_EN_INDIC_DST, "model.bin")):
+        _download_ct2(_EN_INDIC_MODEL, _EN_INDIC_DST)
     else:
-        log.info("[1/2] ✅ NLLB translation model already cached at %s", _NLLB_DST)
+        log.info("  ✅ en-indic model already cached at %s", _EN_INDIC_DST)
 
-    # ── Smoke test: fail the build loudly if model is broken ──
-    log.info("Verifying translation model …")
-    ok_nllb = _verify_model("nllb-200", _NLLB_DST)
+    log.info("[2/3] Downloading %s → %s", _INDIC_EN_MODEL, _INDIC_EN_DST)
+    if not os.path.exists(os.path.join(_INDIC_EN_DST, "model.bin")):
+        _download_ct2(_INDIC_EN_MODEL, _INDIC_EN_DST)
+    else:
+        log.info("  ✅ indic-en model already cached at %s", _INDIC_EN_DST)
 
-    if not ok_nllb:
+    # ── Smoke tests: fail the build loudly if models are broken ──
+    log.info("Verifying translation models …")
+    ok_en_indic = _verify_model("en-indic", _EN_INDIC_DST)
+    ok_indic_en = _verify_model("indic-en", _INDIC_EN_DST)
+
+    if not ok_en_indic or not ok_indic_en:
         log.error("❌ Model verification failed — aborting build.")
         sys.exit(1)
 
-    # ── 2. OmniVoice TTS Model ──
-    log.info("[2/2] Pre-downloading k2-fsa/OmniVoice TTS model …")
+    # ── 3. OmniVoice TTS Model ──
+    log.info("[3/3] Pre-downloading k2-fsa/OmniVoice TTS model …")
     try:
         from huggingface_hub import snapshot_download
         snapshot_download("k2-fsa/OmniVoice")
@@ -125,3 +140,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

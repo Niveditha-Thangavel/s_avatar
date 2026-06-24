@@ -125,9 +125,10 @@ def main():
     if orch_ok and orch_data:
         models = orch_data.get("models", {})
         print(f"Orchestrator:")
-        print(f"  NLLB Model:  {models.get('en_indic')}")
-        print(f"  TTS Model:   {models.get('tts')}")
-        print(f"  TTS Status:  {GREEN}{orch_data.get('services', {}).get('tts')}{NC}")
+        print(f"  EN-INDIC Model: {models.get('en_indic')}")
+        print(f"  INDIC-EN Model: {models.get('indic_en')}")
+        print(f"  TTS Model:      {models.get('tts')}")
+        print(f"  TTS Status:     {GREEN}{orch_data.get('services', {}).get('tts')}{NC}")
 
     check_gpu()
 

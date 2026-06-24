@@ -26,8 +26,8 @@ Retrieves server health status and verifies that translation, STT, and TTS engin
         "tts": "loaded (local omnivoice)"
       },
       "models": {
-        "indic_en": "/root/.cache/ctranslate2/nllb-200-distilled-600M",
-        "en_indic": "/root/.cache/ctranslate2/nllb-200-distilled-600M",
+        "indic_en": "/root/.cache/ctranslate2/ct2-rotary-indictrans2-indic-en-dist-200M",
+        "en_indic": "/root/.cache/ctranslate2/ct2-rotary-indictrans2-en-indic-dist-200M",
         "llm": "disabled",
         "tts": "k2-fsa/OmniVoice"
       }
@@ -37,7 +37,7 @@ Retrieves server health status and verifies that translation, STT, and TTS engin
 ---
 
 ### `POST /chat`
-A synchronous text translation debug endpoint. It translates Indic input into English to smoke-test the NLLB-200 translation pipeline.
+A synchronous text translation debug endpoint. It translates Indic input into English to smoke-test the IndicTrans2 translation pipeline.
 
 *   **URL:** `/chat`
 *   **Method:** `POST`

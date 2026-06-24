@@ -3,9 +3,9 @@ pipeline_orchestrator.py — Low-latency S2S pipeline orchestrator
 
 Orchestrates 5 services:
   1. Vexyl STT (WebSocket streaming ASR)
-  2. NLLB-200 → English (CTranslate2)
+  2. IndicTrans2 → English (CTranslate2)
   3. External LLM (OpenAI-compatible /v1/chat/completions) [currently: static mock]
-  4. NLLB-200 → Indic (CTranslate2)
+  4. IndicTrans2 → Indic (CTranslate2)
   5. OmniVoice TTS (local k2-fsa/OmniVoice inference)
 
 Concurrency model:
@@ -54,12 +54,14 @@ TTS_SAMPLE_RATE = 24000
 # The actual model download and inference can be added later.
 
 
-NLLB_MODEL_PATH = os.environ.get(
-    "NLLB_MODEL_PATH",
-    os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2", "nllb-200-distilled-600M"),
+INDIC_TRANS2_EN_INDIC = os.environ.get(
+    "INDIC_TRANS2_EN_INDIC",
+    os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2", "ct2-rotary-indictrans2-en-indic-dist-200M"),
 )
-INDIC_TRANS2_EN_INDIC = NLLB_MODEL_PATH
-INDIC_TRANS2_INDIC_EN = NLLB_MODEL_PATH
+INDIC_TRANS2_INDIC_EN = os.environ.get(
+    "INDIC_TRANS2_INDIC_EN",
+    os.path.join(os.path.expanduser("~"), ".cache", "ctranslate2", "ct2-rotary-indictrans2-indic-en-dist-200M"),
+)
 
 TRANSLATION_DEVICE = os.environ.get("TRANSLATION_DEVICE", "auto")
 
@@ -149,8 +151,8 @@ def _from_flores(flores: str) -> str:
 
 class IndicTrans2Engine:
     """
-    Wraps a single NLLB-200 CTranslate2 translator for bidirectional
-    translation (English <-> Indic) to save memory and run faster.
+    Wraps two specialized distilled IndicTrans2 CTranslate2 models
+    for fast commercial-friendly translation (English <-> Indic).
     """
 
     def __init__(
@@ -159,42 +161,64 @@ class IndicTrans2Engine:
         indic_en_path: str = INDIC_TRANS2_INDIC_EN,
         device: str = "auto",
     ):
-        # Both paths point to the same NLLB model folder
-        self._model_path = en_indic_path
+        self._en_indic_path = en_indic_path
+        self._indic_en_path = indic_en_path
         if device == "auto":
             import torch
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self._device = device
-        self._translator: Optional["ctranslate2.Translator"] = None
-        self._sp: Optional["sentencepiece.SentencePieceProcessor"] = None
+        
+        # Translators and Tokenizers
+        self._en_indic_translator: Optional["ctranslate2.Translator"] = None
+        self._en_indic_sp_src: Optional["sentencepiece.SentencePieceProcessor"] = None
+        self._en_indic_sp_tgt: Optional["sentencepiece.SentencePieceProcessor"] = None
+
+        self._indic_en_translator: Optional["ctranslate2.Translator"] = None
+        self._indic_en_sp_src: Optional["sentencepiece.SentencePieceProcessor"] = None
+        self._indic_en_sp_tgt: Optional["sentencepiece.SentencePieceProcessor"] = None
+
         self._lock = asyncio.Lock()
         self._loaded = False
 
     async def load(self):
-        """Load NLLB model and tokenizer (idempotent, thread-safe)."""
+        """Load both IndicTrans2 models and tokenizers (idempotent, thread-safe)."""
         if self._loaded:
             return
         async with self._lock:
             if self._loaded:
                 return
             logger.info(
-                "[NLLB-200] Loading model from %s on %s", self._model_path, self._device
+                "[IndicTrans2] Loading models (en-indic from %s, indic-en from %s) on %s",
+                self._en_indic_path,
+                self._indic_en_path,
+                self._device
             )
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._load_sync)
             self._loaded = True
-            logger.info("[NLLB-200] Model ready")
+            logger.info("[IndicTrans2] Models ready")
 
     def _load_sync(self):
         import ctranslate2
         import sentencepiece as spm
 
-        self._sp = spm.SentencePieceProcessor()
-        # NLLB BPE model file name
-        self._sp.load(os.path.join(self._model_path, "sentencepiece.bpe.model"))
-        self._translator = ctranslate2.Translator(
-            self._model_path, device=self._device
+        # Load EN-INDIC
+        self._en_indic_sp_src = spm.SentencePieceProcessor()
+        self._en_indic_sp_src.load(os.path.join(self._en_indic_path, "vocab", "model.SRC"))
+        self._en_indic_sp_tgt = spm.SentencePieceProcessor()
+        self._en_indic_sp_tgt.load(os.path.join(self._en_indic_path, "vocab", "model.TGT"))
+        self._en_indic_translator = ctranslate2.Translator(
+            self._en_indic_path, device=self._device
+        )
+
+        # Load INDIC-EN
+        self._indic_en_sp_src = spm.SentencePieceProcessor()
+        self._indic_en_sp_src.load(os.path.join(self._indic_en_path, "vocab", "model.SRC"))
+        self._indic_en_sp_tgt = spm.SentencePieceProcessor()
+        self._indic_en_sp_tgt.load(os.path.join(self._indic_en_path, "vocab", "model.TGT"))
+        self._indic_en_translator = ctranslate2.Translator(
+            self._indic_en_path, device=self._device
         )
 
     async def indic_to_eng(self, text: str, src_lang: str) -> str:
@@ -209,7 +233,7 @@ class IndicTrans2Engine:
         await self.load()
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, self._translate_sync, text, src_lang, "eng_Latn"
+            None, self._translate_sync, text, src_lang, "eng_Latn", False
         )
 
     async def eng_to_indic(self, text: str, tgt_lang: str) -> str:
@@ -224,25 +248,33 @@ class IndicTrans2Engine:
         await self.load()
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, self._translate_sync, text, "eng_Latn", tgt_lang
+            None, self._translate_sync, text, "eng_Latn", tgt_lang, True
         )
 
-    def _translate_sync(self, text: str, src_lang: str, tgt_lang: str) -> str:
-        # Prepend source language token, append EOS token
-        subwords = self._sp.encode(text, out_type=str)
-        source_tokens = [src_lang] + subwords + ["</s>"]
+    def _translate_sync(self, text: str, src_lang: str, tgt_lang: str, is_en_to_indic: bool) -> str:
+        if is_en_to_indic:
+            sp = self._en_indic_sp_src
+            sp_tgt = self._en_indic_sp_tgt
+            translator = self._en_indic_translator
+        else:
+            sp = self._indic_en_sp_src
+            sp_tgt = self._indic_en_sp_tgt
+            translator = self._indic_en_translator
 
-        # Translate with target language prefix
-        results = self._translator.translate_batch(
+        # Prepend source language token and target language token, append EOS token
+        subwords = sp.encode(text, out_type=str)
+        source_tokens = [src_lang, tgt_lang] + subwords + ["</s>"]
+
+        # Translate without target prefix for IndicTrans2
+        results = translator.translate_batch(
             [source_tokens],
-            target_prefix=[[tgt_lang]],
             beam_size=4,
             max_batch_size=1,
         )
         output_tokens = results[0].hypotheses[0]
 
-        # Decode, skipping target language prefix token
-        decoded = self._sp.decode(output_tokens[1:])
+        # Decode using target tokenizer
+        decoded = sp_tgt.decode(output_tokens)
         return decoded.strip()
 
 
