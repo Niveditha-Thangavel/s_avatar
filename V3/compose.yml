@@ -48,8 +48,8 @@ services:
       - TOKENIZERS_PARALLELISM=false
       - VEXYL_STT_URL=ws://vexyl-stt:8080
       - TRANSLATION_DEVICE=cuda
-      - INDIC_TRANS2_EN_INDIC=/root/.cache/ctranslate2/ct2-rotary-indictrans2-en-indic-dist-200M
-      - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/ct2-rotary-indictrans2-indic-en-dist-200M
+      - INDIC_TRANS2_EN_INDIC=/root/.cache/ctranslate2/ct2-rotary-indictrans2-en-indic-dist-200M/en-indic-200m-ct2/ctranslate2_model
+      - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/ct2-rotary-indictrans2-indic-en-dist-200M/indic-en-200m-ct2/ctranslate2_model
       - HF_HOME=/root/.cache/huggingface
     volumes:
       - ./model_cache/server:/root/.cache
