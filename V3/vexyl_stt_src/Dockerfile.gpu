@@ -1,18 +1,13 @@
-FROM python:3.11-slim
+FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
 
-# System deps: libgomp1 for PyTorch OpenMP, libsndfile1 for soundfile, ffmpeg for MP3/M4A
+# System deps: libsndfile1 for soundfile, ffmpeg for MP3/M4A
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libgomp1 libsndfile1 ffmpeg && \
+    apt-get install -y --no-install-recommends libsndfile1 ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install PyTorch CPU-only (before other deps to cache this large layer)
-RUN pip install --no-cache-dir \
-    torch torchaudio \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# Install remaining Python dependencies
+# Install remaining Python dependencies (PyTorch is pre-installed in this base image)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -28,7 +23,7 @@ COPY vexyl_stt_server.py .
 # Cloud Run injects PORT; set defaults for local testing
 ENV PORT=8080 \
     VEXYL_STT_HOST=0.0.0.0 \
-    VEXYL_STT_DEVICE=cpu
+    VEXYL_STT_DEVICE=cuda
 
 EXPOSE 8080
 
