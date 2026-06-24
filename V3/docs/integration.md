@@ -27,67 +27,28 @@ No build step or npm package required. The widget loads Three.js via importmap a
 <div id="avatar-container" style="width: 400px; height: 500px;"></div>
 ```
 
-### 3. Load the Avatar Widget & S2S Manager
+### 3. Load the Avatar Widget & S2S Pipeline
+
+See [`client/widget-demo.html`](../client/widget-demo.html) for a complete working implementation. At minimum:
 
 ```html
 <script type="module">
 import { AvatarWidget } from './client/avatar-widget.js';
-import { S2SManager } from './client/src/stt.js';
 
 // Initialize the 3D avatar
 const widget = new AvatarWidget({
   container: document.getElementById('avatar-container'),
   modelUrl: '/avatar_head.glb',
-  calibration: {
-    laX: -1.82, laY: -2.42, laZ: 3.14,
-    raX: -1.82, raY: 2.62, raZ: -3.14,
-    lfX: 1.10, lfY: 0.00, lfZ: -0.20,
-    rfX: 1.12, rfY: 0.00, rfZ: 0.14,
-    lhX: -0.10, lhY: 1.66, lhZ: 0.26,
-    rhX: -0.18, rhY: -1.66, rhZ: -0.26,
-  },
   onReady: () => console.log('Avatar ready'),
 });
 
-// Connect to the S2S pipeline
-const s2s = new S2SManager('ws://localhost:8765/ws/s2s');
+// Handle emotion changes
+widget.setEmotion('happy');
 
-// Wire up callbacks
-s2s.onTranscript = (text, lang) => {
-  console.log(`User said (${lang}):`, text);
-};
-
-s2s.onTtsStart = (seq, text) => {
-  console.log(`Speaking response:`, text);
-};
-
-s2s.onAudioChunk = (seq, pcmBytes, sampleRate) => {
-  // Audio playback is handled automatically by S2SManager
-};
-
-s2s.onBlendshapeMatrix = (seq, matrix) => {
-  widget.setAnimationMatrix(matrix);
-};
-
-s2s.onTtsEnd = (seq) => {
-  widget.clearAnimation();
-};
-
-s2s.onError = (err) => console.error(err);
+// Drive lip-sync from server blendshape matrix
+widget.setAnimationMatrix(matrix);
+widget.clearAnimation();
 </script>
-```
-
-### 4. Start / Stop Recording
-
-```javascript
-// Start listening (default: Hindi)
-await s2s.start('hi-IN');
-
-// Stop — triggers translation + TTS generation
-s2s.stop();
-
-// Abort immediately
-s2s.cancel();
 ```
 
 ---
@@ -104,7 +65,6 @@ The main entry point for the 3D avatar. Import from `client/avatar-widget.js`.
 new AvatarWidget({
   container: HTMLElement,          // required — DOM element to render into
   modelUrl: string,                // default: '/avatar_head.glb'
-  serverUrl: string|null,          // optional — server base URL
   onReady: function|null,          // optional — callback when avatar loads
   calibration: object|null,        // optional — arm posture calibration
 })
@@ -116,47 +76,9 @@ new AvatarWidget({
 |---|---|
 | `setAnimationMatrix(matrix)` | Apply PantoMatrix blendshape timeline for lip-sync animation |
 | `clearAnimation()` | Reset all morph targets to zero, return to idle pose |
-| `setEmotion(emotion)` | Set idle expression — `neutral`, `happy`, `sad`, `angry`, `surprised` |
+| `setEmotion(emotion)` | Set idle expression — `neutral`, `happy`, `sad`, `angry`, `surprised`, `fearful` |
 | `syncAudio(audioContext, startTime)` | Synchronize animation clock with AudioContext for precise lip-sync |
 | `dispose()` | Clean up Three.js resources, cancel animation frame |
-
-### `S2SManager`
-
-WebSocket client for the S2S pipeline. Import from `client/src/stt.js`.
-
-**Constructor**
-
-```javascript
-new S2SManager(wsUrl)
-```
-
-`wsUrl` — Full WebSocket URL, e.g. `ws://localhost:8765/ws/s2s`
-
-**Methods**
-
-| Method | Description |
-|---|---|
-| `start(lang, sessionId?)` | Open WebSocket, request mic access, stream audio |
-| `stop()` | End recording, signal server to finish processing |
-| `cancel()` | Abort session immediately, close WebSocket |
-| `mute()` | Mute microphone (used during avatar speech) |
-| `unmute()` | Re-enable microphone after speech |
-
-**Callbacks**
-
-Set these before calling `start()`:
-
-| Callback | Signature | Description |
-|---|---|---|
-| `onTranscript` | `(text: string, lang: string)` | Real-time STT transcript |
-| `onTtsStart` | `(seq: number, text: string)` | Sentence TTS begins |
-| `onAudioChunk` | `(seq: number, pcmBytes: ArrayBuffer, sampleRate: number)` | Raw PCM audio data |
-| `onTtsEnd` | `(seq: number)` | Sentence fully transmitted |
-| `onBlendshapeMatrix` | `(seq: number, matrix: object[])` | ARKit blendshape frames |
-| `onStatusChange` | `(status: string)` | Connection state changes |
-| `onError` | `(message: string)` | Pipeline error |
-
-**Status values:** `listening`, `speaking`, `processing`, `idle`
 
 ---
 
@@ -319,24 +241,6 @@ See [`client/widget-demo.html`](../client/widget-demo.html) for a full working i
 - Pipeline log with color-coded messages
 - Status bar
 - Microphone start/stop buttons
-
-### Custom Audio Playback
-
-Override `onAudioChunk` for custom scheduling:
-
-```javascript
-const audioCtx = new AudioContext();
-
-s2s.onAudioChunk = (seq, pcmBytes, sampleRate) => {
-  const f32 = new Float32Array(pcmBytes);
-  const buffer = audioCtx.createBuffer(1, f32.length, sampleRate);
-  buffer.getChannelData(0).set(f32);
-  const source = audioCtx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(audioCtx.destination);
-  source.start();
-};
-```
 
 The demo page implements gapless playback using `AudioContext` `nextPlayTime` cursor — audio chunks are queued sequentially with no gaps between sentences.
 

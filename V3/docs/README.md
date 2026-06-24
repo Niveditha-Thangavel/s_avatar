@@ -99,13 +99,9 @@ V3/
 │       ├── vexyl_stt_server.py  # Streaming WebSocket + batch REST API
 │       ├── Dockerfile           # Container — downloads model at startup
 │       └── entrypoint.sh        # Startup model downloader
-├── client/                    # 3D avatar & WebSocket client
-│   ├── avatar-widget.js       # AvatarWidget — embeddable Three.js widget
-│   ├── widget-demo.html       # Full demo page with S2S integration
-│   └── src/
-│       ├── stt.js             # S2SManager — WebSocket client & mic streaming
-│       ├── avatar3d.js        # Avatar3D — Three.js scene & blendshape driver
-│       └── behavior.js        # BehaviorManager — procedural idle animation
+├── client/                    # AvatarWidget — single-file embeddable 3D avatar
+│   ├── avatar-widget.js       # AvatarWidget — Three.js scene, emotion body, lip-sync, idle anim
+│   └── widget-demo.html       # Full demo page with S2S WebSocket integration
 └── docs/                      # Documentation
 ```
 

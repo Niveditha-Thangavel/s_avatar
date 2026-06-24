@@ -114,7 +114,7 @@ The `AvatarWidget` (`client/avatar-widget.js`) manages:
 
 - **Audio playback** — PCM chunks are scheduled gaplessly via `AudioContext` `nextPlayTime` cursor
 - **Animation interpolation** — the 30 FPS blendshape matrix is interpolated at display refresh rate (60+ Hz) using binary search + linear interpolation
-- **Idle behavior** — when not speaking, the `BehaviorManager` (`client/src/behavior.js`) drives procedural breathing, blinking, and gaze saccades modulated by the current emotion
+- **Idle behavior** — when not speaking, the `AvatarWidget` (`client/avatar-widget.js`) drives procedural breathing, blinking, and gaze saccades modulated by the current emotion
 
 **Morph target aliasing** — the render loop handles name mismatches between the PantoMatrix blendshape names and the GLB model's morph target names (case-insensitive, dot-suffix stripping, and `jawOpen` ↔ `mouthOpen` fallback).
 
@@ -192,10 +192,7 @@ This enables **pipeline parallelism**: sentence N+1 can be translating while sen
 
 | File | Class | Responsibility |
 |---|---|---|
-| `client/avatar-widget.js` | `AvatarWidget` | Standalone embeddable widget, blendshape + emotion driving |
-| `client/src/avatar3d.js` | `Avatar3D` | Three.js scene, morph target interpolation, arm calibration |
-| `client/src/stt.js` | `S2SManager` | WebSocket client, AudioWorklet mic, message dispatch |
-| `client/src/behavior.js` | `BehaviorManager` | Procedural idle: breathing, blinking, gaze, emotion body params |
+| `client/avatar-widget.js` | `AvatarWidget` | Standalone widget: Three.js scene, emotion body/head, morph interpolation, procedural idle, WebSocket audio sync |
 
 ### Vexyl STT
 

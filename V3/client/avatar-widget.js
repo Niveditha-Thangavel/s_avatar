@@ -8,20 +8,21 @@
  *     container: document.getElementById('avatar-container'),
  *     modelUrl: '/avatar_head.glb',
  *     // optional:
- *     // serverUrl: 'http://your-server:8765',
  *     // onReady: () => console.log('avatar ready'),
- *     // calibration: { laX:-1.82, laY:-2.42, laZ:3.14, ... }  // custom posture
+ *     // calibration: { laX:-1.82, laY:-2.42, laZ:3.14, ... }
  *   });
  *
- *   // Drive lip-sync from PantoMatrix JSON
  *   widget.setAnimationMatrix(matrix);
  *   widget.clearAnimation();
+ *   widget.setEmotion('happy');
  *
- * Requires Three.js (tested with r184). Include via importmap or npm.
+ * Requires Three.js (tested with r184). Include via importmap:
  *
  *   <script type="importmap">
- *   { "imports": { "three": "https://unpkg.com/three@0.184.0/build/three.module.js",
- *                  "three/addons/": "https://unpkg.com/three@0.184.0/examples/jsm/" } }
+ *   { "imports": {
+ *       "three": "https://unpkg.com/three@0.184.0/build/three.module.js",
+ *       "three/addons/": "https://unpkg.com/three@0.184.0/examples/jsm/"
+ *   } }
  *   </script>
  */
 
@@ -36,7 +37,6 @@ export class AvatarWidget {
     if (!this.container) throw new Error('AvatarWidget: container is required');
 
     const modelUrl = opts.modelUrl || '/avatar_head.glb';
-    this.serverUrl = opts.serverUrl || null;
     this.onReady = opts.onReady || null;
 
     // Three.js objects
@@ -73,7 +73,7 @@ export class AvatarWidget {
     this.activeTargetWeights = {};
     this.animationStartTime = 0;
 
-    // Behavior state (idle procedural animation)
+    // Blink state machine
     this.blinkVal = 0;
     this.blinkTimer = 0;
     this.blinkState = 'idle';
@@ -81,19 +81,61 @@ export class AvatarWidget {
     this.blinkStateTime = 0;
     this.nextBlinkInterval = 3000 + Math.random() * 3000;
 
+    // Gaze saccades
     this.gazeOffset = { x: 0, y: 0 };
     this.gazeTarget = { x: 0, y: 0 };
     this.gazeTimer = 0;
     this.nextGazeInterval = 1000 + Math.random() * 2000;
 
+    // Idle breathing (overridden per emotion)
     this.breathingTime = 0;
     this.breathingSpeed = 1.8;
     this.breathingAmplitude = 0.022;
 
+    // Output transforms
     this.rotation = { x: 0, y: 0, z: 0 };
-    this.positionOffset = { x: 0, y: 0, z: 0 };
 
+    // ── Emotion-driven body motion ──────────────────────────────────────────
+    this._emotionBody = {
+      neutral:   { breathSpeed: 1.8,  breathAmp: 0.022, swayAmp: 0.02,  headBiasY: 0.00 },
+      happy:     { breathSpeed: 2.4,  breathAmp: 0.030, swayAmp: 0.035, headBiasY: 0.04 },
+      sad:       { breathSpeed: 1.2,  breathAmp: 0.015, swayAmp: 0.008, headBiasY: -0.06 },
+      angry:     { breathSpeed: 3.2,  breathAmp: 0.038, swayAmp: 0.012, headBiasY: 0.00 },
+      surprised: { breathSpeed: 2.8,  breathAmp: 0.035, swayAmp: 0.025, headBiasY: 0.05 },
+      fearful:   { breathSpeed: 2.2,  breathAmp: 0.028, swayAmp: 0.010, headBiasY: -0.03 },
+    };
+    this._bodyParams = { breathSpeed: 1.8, breathAmp: 0.022, swayAmp: 0.02, headBiasY: 0.00 };
+
+    // Emotion idle blendshape targets
     this.currentEmotion = 'neutral';
+    this.emotionTargets = {
+      neutral: {},
+      happy: {
+        mouthSmileLeft: 0.45, mouthSmileRight: 0.45,
+        cheekSquintLeft: 0.25, cheekSquintRight: 0.25,
+        browOuterUpLeft: 0.20, browOuterUpRight: 0.20,
+      },
+      sad: {
+        mouthFrownLeft: 0.55, mouthFrownRight: 0.55,
+        browInnerUp: 0.45, browDownLeft: 0.15, browDownRight: 0.15,
+      },
+      angry: {
+        browDownLeft: 0.65, browDownRight: 0.65,
+        eyeSquintLeft: 0.35, eyeSquintRight: 0.35,
+        mouthFrownLeft: 0.25, mouthFrownRight: 0.25,
+        noseSneerLeft: 0.20, noseSneerRight: 0.20,
+      },
+      surprised: {
+        eyeWideLeft: 0.55, eyeWideRight: 0.55,
+        browInnerUp: 0.55, browOuterUpLeft: 0.35, browOuterUpRight: 0.35,
+        mouthShrugUpper: 0.20,
+      },
+      fearful: {
+        eyeWideLeft: 0.45, eyeWideRight: 0.45,
+        browInnerUp: 0.50, browOuterUpLeft: 0.30, browOuterUpRight: 0.30,
+        mouthFrownLeft: 0.25, mouthFrownRight: 0.25,
+      },
+    };
     this.emotionWeights = {
       mouthSmileLeft: 0, mouthSmileRight: 0,
       cheekSquintLeft: 0, cheekSquintRight: 0,
@@ -102,10 +144,11 @@ export class AvatarWidget {
       browInnerUp: 0, browDownLeft: 0, browDownRight: 0,
       eyeSquintLeft: 0, eyeSquintRight: 0,
       eyeWideLeft: 0, eyeWideRight: 0,
-      mouthOpen: 0
+      mouthShrugUpper: 0,
+      noseSneerLeft: 0, noseSneerRight: 0,
     };
 
-    // Posture calibration (matching main.js defaults)
+    // Posture calibration
     this.calibration = opts.calibration || {
       laX: -1.82, laY: -2.42, laZ: 3.14,
       raX: -1.82, raY: 2.62, raZ: -3.14,
@@ -115,7 +158,7 @@ export class AvatarWidget {
       rhX: -0.18, rhY: -1.66, rhZ: -0.26,
     };
 
-    // RAf handle
+    // Raf handle
     this._rafId = null;
     this._lastFrameTime = performance.now();
 
@@ -130,7 +173,6 @@ export class AvatarWidget {
     const rect = this.container.getBoundingClientRect();
 
     this.scene = new THREE.Scene();
-
     this.camera = new THREE.PerspectiveCamera(40, rect.width / rect.height, 0.05, 50);
     this.camera.position.set(0, 0, 1.25);
 
@@ -182,7 +224,7 @@ export class AvatarWidget {
     this._rafId = requestAnimationFrame((t) => this._renderLoop(t));
   }
 
-  // ── Public API ──────────────────────────────────────────────────────────────
+  // ── Public API ──────────────────────────────────────────────────────────
 
   syncAudio(audioContext, audioStartTime) {
     this._audioContext = audioContext;
@@ -212,9 +254,13 @@ export class AvatarWidget {
   }
 
   setEmotion(emotion) {
-    if (['neutral', 'happy', 'sad', 'angry', 'surprised'].includes(emotion)) {
-      this.currentEmotion = emotion;
-    }
+    if (!this.emotionTargets[emotion]) return;
+    this.currentEmotion = emotion;
+    // Force immediate morph application so there's no 1-frame lag
+    const morphs = this.emotionTargets[emotion] || {};
+    const allShapes = new Set(Object.values(this.emotionTargets).flatMap(m => Object.keys(m)));
+    allShapes.forEach(shape => this._setMorphTarget(shape, 0.0));
+    Object.entries(morphs).forEach(([shape, val]) => this._setMorphTarget(shape, val));
   }
 
   dispose() {
@@ -231,7 +277,7 @@ export class AvatarWidget {
     this._onResize();
   }
 
-  // ── Model loading ───────────────────────────────────────────────────────────
+  // ── Model loading ───────────────────────────────────────────────────────
 
   loadGLBModel(url) {
     const loader = new GLTFLoader();
@@ -286,7 +332,7 @@ export class AvatarWidget {
     );
   }
 
-  // ── Render loop ─────────────────────────────────────────────────────────────
+  // ── Render loop ──────────────────────────────────────────────────────────
 
   _renderLoop(now) {
     this._rafId = requestAnimationFrame((t) => this._renderLoop(t));
@@ -296,19 +342,20 @@ export class AvatarWidget {
 
     if (!this.isLoaded) return;
 
-    // Update idle procedural behavior
+    // Update idle procedural behavior (breathing, emotion body, blink, gaze)
     this._updateBehavior(dt);
 
     // Head rotation
     this._setHeadRotation(this.rotation.x, this.rotation.y, this.rotation.z);
 
-    // Arm sways
+    // Arm sways (modulated by emotion breathing time)
     this._updateArmSways(this.breathingTime);
 
     // Eye gaze + blink
     this._setGaze(this.gazeOffset.x * 20.0, this.gazeOffset.y * 20.0);
     this._setBlink(this.blinkVal);
 
+    // Server-driven animation matrix (lip-sync)
     if (this.isSpeaking) {
       let elapsed;
       if (this._audioContext && this._audioStartTime !== undefined && this._audioStartTime !== null) {
@@ -342,7 +389,7 @@ export class AvatarWidget {
       }
     }
 
-    // Emotion morph targets (idle only — server matrix bakes emotion)
+    // Emotion morph targets (idle only — server matrix already bakes emotion)
     if (!this.isSpeaking && this.emotionWeights) {
       Object.keys(this.emotionWeights).forEach((morph) => {
         this._setMorphTarget(morph, this.emotionWeights[morph]);
@@ -353,30 +400,34 @@ export class AvatarWidget {
     this.renderer.render(this.scene, this.camera);
   }
 
-  // ── Behavior (idle procedural animation) ────────────────────────────────────
+  // ── Behavior (idle procedural animation) ─────────────────────────────────
 
   _updateBehavior(dt) {
-    const targets = {
-      neutral: {},
-      happy: { mouthSmileLeft: 0.45, mouthSmileRight: 0.45, cheekSquintLeft: 0.25, cheekSquintRight: 0.25, browOuterUpLeft: 0.20, browOuterUpRight: 0.20 },
-      sad: { mouthFrownLeft: 0.55, mouthFrownRight: 0.55, browInnerUp: 0.45, browDownLeft: 0.15, browDownRight: 0.15 },
-      angry: { browDownLeft: 0.65, browDownRight: 0.65, eyeSquintLeft: 0.35, eyeSquintRight: 0.35, mouthFrownLeft: 0.25, mouthFrownRight: 0.25 },
-      surprised: { eyeWideLeft: 0.5, eyeWideRight: 0.5, browInnerUp: 0.55, browOuterUpLeft: 0.35, browOuterUpRight: 0.35, mouthOpen: 0.15 }
-    };
+    // ── Interpolate body params toward current emotion ─────────────────────
+    const targetBody = this._emotionBody[this.currentEmotion] || this._emotionBody.neutral;
+    const bodyLerp = 1 - Math.exp(-2 * dt);
+    for (const key of Object.keys(this._bodyParams)) {
+      this._bodyParams[key] += (targetBody[key] - this._bodyParams[key]) * bodyLerp;
+    }
+    this.breathingSpeed    = this._bodyParams.breathSpeed;
+    this.breathingAmplitude = this._bodyParams.breathAmp;
 
-    const targetWeights = targets[this.currentEmotion] || {};
-    const emotionSpeed = 5.0;
-    const lerp = 1 - Math.exp(-emotionSpeed * dt);
+    // ── Interpolate emotion blendshape weights ──────────────────────────────
+    const targetWeights = this.emotionTargets[this.currentEmotion] || {};
+    const emotionLerp = 1 - Math.exp(-5.0 * dt);
     Object.keys(this.emotionWeights).forEach(key => {
       const t = targetWeights[key] || 0.0;
-      this.emotionWeights[key] += (t - this.emotionWeights[key]) * lerp;
+      this.emotionWeights[key] += (t - this.emotionWeights[key]) * emotionLerp;
     });
 
-    // Breathing
+    // ── Breathing ───────────────────────────────────────────────────────────
     this.breathingTime += dt;
     const cycle = Math.sin(this.breathingTime * this.breathingSpeed);
+    const swayAmp = this._bodyParams.swayAmp;
+    const biasY   = this._bodyParams.headBiasY;
+
     this.rotation.x = cycle * this.breathingAmplitude;
-    this.rotation.y = Math.cos(this.breathingTime * this.breathingSpeed * 0.5) * this.breathingAmplitude * 0.3;
+    this.rotation.y = Math.cos(this.breathingTime * this.breathingSpeed * 0.5) * swayAmp * 0.3 + biasY;
     this.rotation.z = Math.sin(this.breathingTime * this.breathingSpeed * 0.3) * this.breathingAmplitude * 0.15;
 
     // Blink
@@ -451,7 +502,7 @@ export class AvatarWidget {
     this.gazeOffset.y += (this.gazeTarget.y - this.gazeOffset.y) * f;
   }
 
-  // ── Mesh and bone helpers ───────────────────────────────────────────────────
+  // ── Mesh and bone helpers ────────────────────────────────────────────────
 
   _setMorphTarget(name, value) {
     this.morphMeshes.forEach((mesh) => {
