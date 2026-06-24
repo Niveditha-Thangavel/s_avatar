@@ -37,13 +37,7 @@ case "${1:-help}" in
   build)
     echo "=== Building local images ==="
     echo "(vexyl-stt is built from GitHub source — needs internet on first run)"
-    if command -v nvidia-smi &> /dev/null; then
-      echo "GPU detected! Building with GPU overrides (including CUDA PyTorch)..."
-      docker compose -f docker-compose.yml -f docker-compose.gpu.yml build
-    else
-      echo "No GPU detected. Building CPU-only images..."
-      docker compose build
-    fi
+    docker compose build
     ;;
 
   down)
