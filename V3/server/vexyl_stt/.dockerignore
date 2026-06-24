@@ -6,6 +6,7 @@ venv/
 test.html
 test-batch.html
 *.sh
+!entrypoint.sh
 vexyl-stt-client.js
 __pycache__/
 *.pyc

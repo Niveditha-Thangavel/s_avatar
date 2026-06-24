@@ -1,16 +1,9 @@
-x-gpu-device: &gpu-device
-  driver: nvidia
-  count: 1
-  capabilities: [gpu]
-
 services:
 
   vexyl-stt:
     build:
-      context: ./vexyl_stt_src
+      context: ./server/vexyl_stt
       dockerfile: Dockerfile
-      args:
-        HF_TOKEN: ${HF_TOKEN:?HF_TOKEN is required. Set it in .env or export HF_TOKEN=hf_xxx}
     image: vexyl-stt:local
     container_name: vexyl-stt
     ports:
@@ -18,37 +11,48 @@ services:
     environment:
       - PORT=8080
       - VEXYL_STT_PORT=8080
+      - VEXYL_STT_DEVICE=cuda
       - VEXYL_STT_SILENCE_DURATION=1.2
       - VEXYL_STT_SILENCE_THRESHOLD=0.015
       - VEXYL_STT_MIN_SPEECH_DURATION=0.3
+      # HF_TOKEN only needed on first run for gated model download.
+      # Once cached in the volume, you can remove it.
+      - HF_TOKEN=${HF_TOKEN:-}
     volumes:
-      - vexyl_model_cache:/root/.cache
+      - ./model_cache/vexyl:/root/.cache
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 30s
       timeout: 15s
       retries: 10
-      start_period: 300s
+      start_period: 600s
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-  orchestrator:
+  server:
     build:
       context: .
       dockerfile: Dockerfile.server
-      args:
-        HF_TOKEN: ${HF_TOKEN:-}
-    image: avatar-orchestrator:local
-    container_name: avatar-orchestrator
+    image: avatar-server:local
+    container_name: avatar-server
     ports:
       - "8765:8765"
     environment:
       - PYTHONUNBUFFERED=1
       - TOKENIZERS_PARALLELISM=false
       - VEXYL_STT_URL=ws://vexyl-stt:8080
+      - TRANSLATION_DEVICE=cuda
       - INDIC_TRANS2_EN_INDIC=/root/.cache/ctranslate2/ct2-rotary-indictrans2-en-indic-dist-200M
       - INDIC_TRANS2_INDIC_EN=/root/.cache/ctranslate2/ct2-rotary-indictrans2-indic-en-dist-200M
       - HF_HOME=/root/.cache/huggingface
-      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - ./model_cache/server:/root/.cache
     depends_on:
       vexyl-stt:
         condition: service_healthy
@@ -57,10 +61,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 300s
+      start_period: 600s
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
 
-
-volumes:
-  vexyl_model_cache:

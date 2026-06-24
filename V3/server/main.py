@@ -7,7 +7,9 @@ Pipeline Orchestrator:
 Endpoints:
   GET  /health              — service health + model readiness
   WS   /ws/s2s              — full S2S pipeline (audio in → audio out)
-  POST /chat                — typed text → direct TTS (for debugging)
+  POST /tts                 — text → TTS audio + PantoMatrix blendshapes
+  POST /speak/{emotion}     — text → TTS + emotion-baked blendshapes
+  POST /chat                — translation debug
 """
 
 import sys
@@ -227,6 +229,82 @@ async def chat_endpoint(req: ChatRequest):
         "translated": translated,
         "lang": req.lang,
         "flores_tgt": flores_tgt,
+    }
+
+
+# ── TTS Endpoint ───────────────────────────────────────────────────────────────
+
+@app.post("/tts")
+async def tts_endpoint(req: SpeakRequest, request: Request):
+    """
+    Text-to-Speech synthesis with PantoMatrix blendshapes.
+    Returns audio URL + animation matrix for driving a 3D avatar.
+    """
+    if not req.text.strip():
+        raise HTTPException(400, "Empty text")
+
+    tts_input = req.text.strip()
+
+    # 1. Translate to target language if needed
+    if req.lang != "en" and req.lang != "eng_Latn":
+        try:
+            flores_tgt = _to_flores(req.lang)
+            translated = await _trans_engine.eng_to_indic(tts_input, flores_tgt)
+            tts_input = translated or tts_input
+        except Exception as exc:
+            logger.warning("[TTS] Translation to %s failed: %s", req.lang, exc)
+
+    tts_input = _sanitize_for_omni(tts_input)
+
+    # 2. Generate audio
+    loop = asyncio.get_event_loop()
+    try:
+        audio_bytes = await loop.run_in_executor(None, _tts_engine.generate, tts_input)
+    except Exception as exc:
+        raise HTTPException(500, f"TTS failed: {exc}")
+
+    if not audio_bytes:
+        raise HTTPException(500, "TTS produced no audio")
+
+    tts_sr = 24000
+    audio_f32 = np.frombuffer(audio_bytes, dtype=np.float32)
+
+    # 3. Write WAV
+    wav_buf = io.BytesIO()
+    sf.write(wav_buf, audio_f32, tts_sr, format="WAV", subtype="FLOAT")
+    wav_bytes = wav_buf.getvalue()
+
+    audio_id = uuid.uuid4().hex
+    _audio_store[audio_id] = wav_bytes
+
+    scheme = request.url.scheme
+    host = request.url.hostname
+    port = request.url.port
+    if port and port not in (80, 443):
+        audio_url = f"{scheme}://{host}:{port}{_AUDIO_BASE_URL}/{audio_id}"
+    else:
+        audio_url = f"{scheme}://{host}{_AUDIO_BASE_URL}/{audio_id}"
+
+    logger.info("[TTS] Generated %.2fs WAV audio -> %s", len(audio_f32) / tts_sr, audio_id)
+
+    # 4. PantoMatrix blendshapes
+    try:
+        matrix = await loop.run_in_executor(
+            None, extract_blendshapes, audio_bytes, tts_sr
+        )
+    except Exception as exc:
+        logger.error("[TTS] PantoMatrix failed: %s", exc)
+        matrix = []
+
+    # 5. Cleanup old entries
+    if len(_audio_store) > 100:
+        oldest = sorted(_audio_store.keys())[:50]
+        for k in oldest:
+            _audio_store.pop(k, None)
+
+    return {
+        "audio_url": audio_url,
+        "animation_matrix": matrix,
     }
 
 

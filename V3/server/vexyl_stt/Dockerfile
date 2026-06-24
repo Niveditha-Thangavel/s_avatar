@@ -11,14 +11,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download the model at build time (baked into image, ~2.4GB)
-ARG HF_TOKEN
-RUN python -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download('ai4bharat/indic-conformer-600m-multilingual', token='${HF_TOKEN}')"
-
-# Copy application code
+# Copy application code + startup model downloader
 COPY vexyl_stt_server.py .
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh
 
 # Cloud Run injects PORT; set defaults for local testing
 ENV PORT=8080 \
@@ -27,7 +23,7 @@ ENV PORT=8080 \
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=600s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')"
 
-CMD ["python", "-u", "vexyl_stt_server.py"]
+ENTRYPOINT ["./entrypoint.sh"]

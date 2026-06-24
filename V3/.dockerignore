@@ -4,6 +4,7 @@
 *.sw?
 node_modules/
 dist/
+venv/
 server/venv/
 server/__pycache__/
 **/__pycache__/
@@ -11,3 +12,6 @@ server/__pycache__/
 
 # Dev/test files — not needed in Docker build context
 emotion-test.html
+
+# Model cache — ~7 GB, lives on host filesystem via bind mount
+model_cache/

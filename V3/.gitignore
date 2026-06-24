@@ -32,3 +32,6 @@ __pycache__/
 
 # Secrets — never commit tokens
 .env
+
+# Model cache — downloaded at runtime, 7+ GB
+model_cache/
