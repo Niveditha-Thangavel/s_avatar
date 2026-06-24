@@ -60,6 +60,52 @@ A synchronous text translation debug endpoint. It translates Indic input into En
 
 ---
 
+### `POST /speak/{emotion}`
+A text-to-speech endpoint that synthesizes text with a forced emotional expression. It automatically appends the corresponding emotion bracket (e.g., `[happy]`, `[sad]`, `[angry]`, `[surprised]`, `[fearful]`) to guide the OmniVoice TTS model, and blends the emotion morph targets into every frame of the returned blendshape animation matrix.
+
+*   **URL:** `/speak/{emotion}`
+*   **Method:** `POST`
+*   **URL Parameters:**
+    *   `emotion`: `neutral` | `happy` | `sad` | `angry` | `surprised` | `fearful` (case-insensitive)
+*   **Request Body (SpeakRequest):**
+    ```json
+    {
+      "text": "Hello, how are you?",
+      "lang": "en", // Target language (e.g. "en", "hi-IN", "ta-IN"). English input will be translated if lang != "en".
+      "speed": 1.0 // TTS speaking speed multiplier (default: 1.0)
+    }
+    ```
+*   **Response Payload (200 OK):**
+    ```json
+    {
+      "audio_url": "http://localhost:8765/api/v1/audio/3c1d42a6...", // URL to download/play the generated audio file
+      "animation_matrix": [
+        {
+          "time": 0.0,
+          "blendshapes": {
+            "jawOpen": 0.05,
+            "mouthSmileLeft": 0.50, // Blended happy expression target
+            "mouthSmileRight": 0.50,
+            ...
+          }
+        },
+        ...
+      ],
+      "emotion": "happy"
+    }
+    ```
+
+---
+
+### `GET /api/v1/audio/{audio_id}`
+Serves the generated WAV audio file stored in the server's in-memory store.
+
+*   **URL:** `/api/v1/audio/{audio_id}`
+*   **Method:** `GET`
+*   **Response Payload (200 OK):** Binary audio stream (`audio/wav`).
+
+---
+
 ### `WS /ws/s2s`
 The real-time bidirectional Speech-to-Speech WebSocket server. The frontend streams user audio to this socket and receives live transcription, visual blendshapes, and audio output.
 
