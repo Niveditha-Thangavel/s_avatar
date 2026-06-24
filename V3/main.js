@@ -45,7 +45,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
 
   // New sentence starting
-  s2s.onTTSStart = (seq, text) => {
+  s2s.onTtsStart = (seq, text) => {
     console.log(`[S2S] TTS start seq=${seq}:`, text);
     updateProgressUI('🔊 Receiving audio…', true);
 
@@ -93,7 +93,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
 
   // TTS fully done for this sentence — force-flush pending
-  s2s.onTTSEnd = (seq) => {
+  s2s.onTtsEnd = (seq) => {
     console.log(`[S2S] TTS end seq=${seq}`);
     const sentence = playbackQueue.find(s => s.seq === seq);
     if (sentence) {

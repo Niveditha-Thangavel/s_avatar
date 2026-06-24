@@ -38,9 +38,9 @@ export class S2SManager {
 
     // Registered callbacks — set before calling start()
     this.onTranscript       = null;   // (text: string, lang: string) => void
-    this.onTTSStart         = null;   // (seq: number, text: string)  => void
+    this.onTtsStart         = null;   // (seq: number, text: string)  => void
     this.onAudioChunk       = null;   // (seq: number, pcmBytes: ArrayBuffer, sampleRate: number) => void
-    this.onTTSEnd           = null;   // (seq: number) => void
+    this.onTtsEnd           = null;   // (seq: number) => void
     this.onBlendshapeMatrix = null;   // (seq: number, matrix: Array) => void
     this.onStatusChange     = null;   // (status: string) => void
     this.onError            = null;   // (message: string) => void
@@ -227,6 +227,14 @@ export class S2SManager {
 
   _emit(event, ...args) {
     const key = `on${event.charAt(0).toUpperCase()}${event.slice(1)}`;
-    if (typeof this[key] === 'function') this[key](...args);
+    if (typeof this[key] === 'function') {
+      this[key](...args);
+    } else {
+      // Fallback for uppercase TTS
+      const upperKey = key.replace('Tts', 'TTS');
+      if (typeof this[upperKey] === 'function') {
+        this[upperKey](...args);
+      }
+    }
   }
 }
