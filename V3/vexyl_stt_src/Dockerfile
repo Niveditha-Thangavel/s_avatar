@@ -7,10 +7,11 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Install PyTorch CPU-only (before other deps to cache this large layer)
+# Install PyTorch (default is CPU-only, override via TORCH_INDEX_URL build arg for CUDA)
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir \
     torch torchaudio \
-    --index-url https://download.pytorch.org/whl/cpu
+    --index-url ${TORCH_INDEX_URL}
 
 # Install remaining Python dependencies
 COPY requirements.txt .

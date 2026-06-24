@@ -7,6 +7,12 @@
 
 services:
   vexyl-stt:
+    build:
+      context: ./vexyl_stt_src
+      dockerfile: Dockerfile
+      args:
+        HF_TOKEN: ${HF_TOKEN:?HF_TOKEN is required. Set it in .env or export HF_TOKEN=hf_xxx}
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu121
     environment:
       - VEXYL_STT_DEVICE=cuda
     deploy:
