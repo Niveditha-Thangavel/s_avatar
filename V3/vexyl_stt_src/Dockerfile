@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
 
 # System deps: libsndfile1 for soundfile, ffmpeg for MP3/M4A
 RUN apt-get update && \
