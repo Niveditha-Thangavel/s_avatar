@@ -60,18 +60,7 @@ services:
       start_period: 300s
     restart: unless-stopped
 
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    image: avatar-frontend:local
-    container_name: avatar-frontend
-    ports:
-      - "3005:80"
-    depends_on:
-      orchestrator:
-        condition: service_healthy
-    restart: unless-stopped
+
 
 volumes:
   vexyl_model_cache:

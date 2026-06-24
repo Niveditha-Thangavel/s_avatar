@@ -164,7 +164,7 @@
 
   // ── 3. S2S session state ─────────────────────────────────────────────────────
   let ws=null, audioCtx=null, nextPlayAt=0, micStream=null, workletNode=null;
-  let isRunning=false, pendingMeta=null;
+  let isRunning=false, pendingMeta=null, isMuted=false;
 
   // Audio buffering: wait for server-side PantoMatrix before playback
   const MATRIX_TIMEOUT_MS=500;
@@ -231,7 +231,7 @@
     await mCtx.audioWorklet.addModule(u); URL.revokeObjectURL(u);
     const src=mCtx.createMediaStreamSource(micStream);
     workletNode=new AudioWorkletNode(mCtx,'pp');
-    workletNode.port.onmessage=e=>{if(ws?.readyState===WebSocket.OPEN) ws.send(e.data);};
+    workletNode.port.onmessage=e=>{if(ws?.readyState===WebSocket.OPEN && !isMuted) ws.send(e.data);};
     src.connect(workletNode);
 
     setStatus('🎤 Listening…');
@@ -243,6 +243,7 @@
     if(ws?.readyState===WebSocket.OPEN) ws.send(JSON.stringify({type:'stop'}));
     teardownMic();
     isRunning=false;
+    isMuted=false;
     updateBtns(false);
     setStatus('⏳ Processing…');
     
@@ -306,7 +307,8 @@
       if (currentActiveSeq !== null) {
         currentActiveSeq = null;
         widget.clearAnimation();
-        setStatus('● Idle');
+        isMuted = false;
+        setStatus('🎤 Listening…');
       }
     }
   }
@@ -339,7 +341,8 @@
 
       case 'tts_start':
         log(`🔊 seq ${msg.seq}: ${msg.text}`,'tts');
-        setStatus('🔊 Receiving audio…');
+        isMuted = true;
+        setStatus('🔊 Speaking…');
         playbackQueue.push({
           seq: msg.seq,
           chunks: [],

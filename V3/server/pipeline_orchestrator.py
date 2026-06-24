@@ -530,22 +530,26 @@ class PipelineOrchestrator:
                 except asyncio.TimeoutError:
                     continue
 
-                t0 = time.monotonic()
-                # 1. Select the next static response in English
-                resp_text = next(_static_response_cycle)
-                event.response_text = resp_text
+                try:
+                    t0 = time.monotonic()
+                    # 1. Select the next static response in English
+                    resp_text = next(_static_response_cycle)
+                    event.response_text = resp_text
 
-                # 2. Translate English response -> Indic response directly
-                indic_response = await self._trans.eng_to_indic(
-                    resp_text, self._flores_src
-                )
+                    # 2. Translate English response -> Indic response directly
+                    indic_response = await self._trans.eng_to_indic(
+                        resp_text, self._flores_src
+                    )
 
-                # 3. Format suffix to show user's input
-                suffix = _YOU_SAID_TEMPLATES.get(
-                    self._lang_bcp47, "(You said: {text})"
-                ).format(text=event.source_text)
-                event.indic_text = f"{indic_response} {suffix}"
-                event.stage_timing["pipeline_done"] = time.monotonic() - t0
+                    # 3. Format suffix to show user's input
+                    suffix = _YOU_SAID_TEMPLATES.get(
+                        self._lang_bcp47, "(You said: {text})"
+                    ).format(text=event.source_text)
+                    event.indic_text = f"{indic_response} {suffix}"
+                    event.stage_timing["pipeline_done"] = time.monotonic() - t0
+                except Exception as ex:
+                    logger.error("[Pipeline] Error in translation/processing: %s", ex, exc_info=True)
+                    event.indic_text = resp_text
 
                 # 4. Push directly to TTS queue
                 await self._indic_queue.put(event)

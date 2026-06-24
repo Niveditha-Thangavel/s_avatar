@@ -47,6 +47,7 @@ export class S2SManager {
     this._targetSampleRate = 16_000;
     this._sessionId = '';
     this._pendingMeta = null;   // metadata for next binary audio frame
+    this.isMuted = false;
   }
 
   // ── Public API ──────────────────────────────────────────────────────────────
@@ -130,13 +131,26 @@ export class S2SManager {
     const source = this.audioCtx.createMediaStreamSource(this.micStream);
     this.workletNode = new AudioWorkletNode(this.audioCtx, 'pcm-processor');
     this.workletNode.port.onmessage = (e) => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.ws?.readyState === WebSocket.OPEN && !this.isMuted) {
         this.ws.send(e.data);  // stream Int16 PCM to server
       }
     };
     source.connect(this.workletNode);
 
     this.isListening = true;
+    this.isMuted = false;
+    this._emit('statusChange', 'listening');
+  }
+
+  /** Mute the microphone stream (avatar speaking) */
+  mute() {
+    this.isMuted = true;
+    this._emit('statusChange', 'speaking');
+  }
+
+  /** Unmute the microphone stream (listening) */
+  unmute() {
+    this.isMuted = false;
     this._emit('statusChange', 'listening');
   }
 
@@ -185,8 +199,8 @@ export class S2SManager {
         break;
 
       case 'tts_start':
+        this.mute();
         this._emit('ttsStart', msg.seq, msg.text);
-        this._emit('statusChange', 'speaking');
         break;
 
       case 'audio_chunk':
