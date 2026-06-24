@@ -17,13 +17,11 @@ let s2s      = null;
 // Audio playback
 let audioContext       = null;
 let nextPlayTime       = 0;        // AudioContext scheduled play cursor
-let isAudioPlaying     = false;
-let audioStartTime     = 0;        // time of first chunk start (for animation sync)
 
-// Pending audio chunks while waiting for blendshape matrix from server
+// Sentence playback queue for animation sync and back-to-back playback
 const MATRIX_TIMEOUT_MS = 500;     // max ms to wait for matrix before forcing playback
-let _pendingChunks     = [];       // buffered until blendshape_matrix arrives or timeout fires
-let _pendingTimer      = null;     // setTimeout handle for the flush timeout
+const playbackQueue     = [];       // array of sentence records: { seq, chunks, matrix, startTime, duration, flushed, flushTimer }
+let currentActiveSeq   = null;
 
 let lastFrameTime = performance.now();
 let frameCount = 0;
@@ -50,18 +48,32 @@ window.addEventListener('DOMContentLoaded', async () => {
   s2s.onTTSStart = (seq, text) => {
     console.log(`[S2S] TTS start seq=${seq}:`, text);
     updateProgressUI('🔊 Receiving audio…', true);
+
+    // Create new sentence record in queue
+    playbackQueue.push({
+      seq,
+      chunks: [],
+      matrix: null,
+      startTime: null,
+      duration: 0,
+      flushed: false,
+      flushTimer: null
+    });
   };
 
   // PCM chunk arrived — buffer until blendshape matrix or timeout
   s2s.onAudioChunk = (seq, pcmBytes, sampleRate) => {
     ensureAudioContext();
 
-    _pendingChunks.push({ pcmBytes, sampleRate });
+    const sentence = playbackQueue.find(s => s.seq === seq);
+    if (!sentence) return;
+
+    sentence.chunks.push({ pcmBytes, sampleRate });
 
     // Start flush timeout on the first chunk of this sentence
-    if (!_pendingTimer) {
-      _pendingTimer = setTimeout(() => {
-        _flushPendingAudio('timeout');
+    if (!sentence.flushed && !sentence.flushTimer) {
+      sentence.flushTimer = setTimeout(() => {
+        flushSentence(sentence, 'timeout');
       }, MATRIX_TIMEOUT_MS);
     }
   };
@@ -69,17 +81,28 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Server sends blendshape matrix after TTS streaming completes — flush & play
   s2s.onBlendshapeMatrix = (seq, matrix) => {
     console.log(`[S2S] Blendshape matrix seq=${seq}, frames=${matrix?.length}`);
-    if (matrix && matrix.length > 0) {
-      avatar.setAnimationMatrix(matrix);
+    const sentence = playbackQueue.find(s => s.seq === seq);
+    if (sentence) {
+      if (sentence.flushTimer) {
+        clearTimeout(sentence.flushTimer);
+        sentence.flushTimer = null;
+      }
+      sentence.matrix = matrix;
+      flushSentence(sentence, 'matrix');
     }
-    _flushPendingAudio('matrix');
   };
 
-  // TTS fully done for this sentence — force-flush pending, then schedule idle
+  // TTS fully done for this sentence — force-flush pending
   s2s.onTTSEnd = (seq) => {
     console.log(`[S2S] TTS end seq=${seq}`);
-    _flushPendingAudio('tts_end');
-    _scheduleIdle();
+    const sentence = playbackQueue.find(s => s.seq === seq);
+    if (sentence) {
+      if (sentence.flushTimer) {
+        clearTimeout(sentence.flushTimer);
+        sentence.flushTimer = null;
+      }
+      flushSentence(sentence, 'tts_end');
+    }
   };
 
   s2s.onStatusChange = (status) => {
@@ -123,59 +146,48 @@ function ensureAudioContext() {
 }
 
 function _stopAudio() {
-  isAudioPlaying = false;
-  nextPlayTime   = 0;
-  audioStartTime = 0;
-  _pendingChunks = [];
-  if (_pendingTimer) { clearTimeout(_pendingTimer); _pendingTimer = null; }
+  nextPlayTime = 0;
+  playbackQueue.forEach(s => {
+    if (s.flushTimer) clearTimeout(s.flushTimer);
+  });
+  playbackQueue.length = 0;
+  currentActiveSeq = null;
   avatar?.clearAnimation();
+  updateStatusBadge('idle');
+  updateProgressUI('', false);
 }
 
-function _flushPendingAudio(reason) {
-  if (_pendingTimer) { clearTimeout(_pendingTimer); _pendingTimer = null; }
-  if (_pendingChunks.length === 0) return;
-
-  console.log(`[S2S] Flushing ${_pendingChunks.length} chunks (reason=${reason})`);
-
-  // Mark start time before the first chunk so animation elapsed is correct
-  if (!isAudioPlaying) {
-    audioStartTime = nextPlayTime < audioContext.currentTime
-      ? audioContext.currentTime
-      : nextPlayTime;
-    isAudioPlaying = true;
-    updateStatusBadge('speaking');
+function flushSentence(sentence, reason) {
+  if (sentence.flushed || sentence.chunks.length === 0) return;
+  if (sentence.flushTimer) {
+    clearTimeout(sentence.flushTimer);
+    sentence.flushTimer = null;
   }
 
-  for (const chunk of _pendingChunks) {
-    _playAudioChunk(chunk.pcmBytes, chunk.sampleRate);
+  console.log(`[S2S] Flushing seq=${sentence.seq} with ${sentence.chunks.length} chunks (reason=${reason})`);
+
+  let startTime = nextPlayTime < audioContext.currentTime
+    ? audioContext.currentTime
+    : nextPlayTime;
+
+  let playCursor = startTime;
+  for (const chunk of sentence.chunks) {
+    const float32 = new Float32Array(chunk.pcmBytes);
+    const buf = audioContext.createBuffer(1, float32.length, chunk.sampleRate);
+    buf.getChannelData(0).set(float32);
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buf;
+    source.connect(audioContext.destination);
+    source.start(playCursor);
+
+    playCursor += buf.duration;
   }
-  _pendingChunks = [];
-}
 
-function _playAudioChunk(pcmBytes, sampleRate) {
-  const float32 = new Float32Array(pcmBytes);
-  const buf = audioContext.createBuffer(1, float32.length, sampleRate);
-  buf.getChannelData(0).set(float32);
-
-  const source = audioContext.createBufferSource();
-  source.buffer = buf;
-  source.connect(audioContext.destination);
-
-  if (nextPlayTime < audioContext.currentTime) {
-    nextPlayTime = audioContext.currentTime;
-  }
-
-  source.start(nextPlayTime);
-  nextPlayTime += buf.duration;
-}
-
-function _scheduleIdle() {
-  const remaining = Math.max(0, nextPlayTime - (audioContext?.currentTime ?? 0));
-  setTimeout(() => {
-    isAudioPlaying = false;
-    updateStatusBadge('idle');
-    updateProgressUI('', false);
-  }, remaining * 1000 + 200);
+  sentence.startTime = startTime;
+  sentence.duration = playCursor - startTime;
+  sentence.flushed = true;
+  nextPlayTime = playCursor;
 }
 
 // ── Apply emotion ─────────────────────────────────────────────────────────────
@@ -303,11 +315,55 @@ function renderLoop() {
 
   behavior.update(dt);
 
+  const nowAudioTime = audioContext ? audioContext.currentTime : 0;
+
+  // Clean up finished sentences from the queue
+  while (playbackQueue.length > 0 && 
+         playbackQueue[0].flushed && 
+         playbackQueue[0].startTime !== null && 
+         nowAudioTime > playbackQueue[0].startTime + playbackQueue[0].duration + 1.0) {
+    const old = playbackQueue.shift();
+    if (old.flushTimer) clearTimeout(old.flushTimer);
+  }
+
+  // Find the sentence currently playing or scheduled next
+  let activeSentence = null;
+  for (const s of playbackQueue) {
+    if (s.flushed && s.startTime !== null) {
+      if (nowAudioTime <= s.startTime + s.duration + 0.2) {
+        activeSentence = s;
+        break;
+      }
+    }
+  }
+
   let elapsed = null;
-  if (isAudioPlaying && audioContext) {
-    // Subtract hardware output latency to align lip shapes to speaker output
+  if (activeSentence) {
+    // If we transition to a new active sentence, update avatar matrix
+    if (currentActiveSeq !== activeSentence.seq) {
+      currentActiveSeq = activeSentence.seq;
+      if (activeSentence.matrix) {
+        avatar.setAnimationMatrix(activeSentence.matrix);
+      } else {
+        avatar.clearAnimation();
+      }
+      updateStatusBadge('speaking');
+    } else {
+      // If the matrix arrived late, set it now
+      if (activeSentence.matrix && !avatar.currentAnimationMatrix) {
+        avatar.setAnimationMatrix(activeSentence.matrix);
+      }
+    }
+
     const latency = audioContext.outputLatency || 0.08;
-    elapsed = audioContext.currentTime - audioStartTime - latency;
+    elapsed = nowAudioTime - activeSentence.startTime - latency;
+  } else {
+    if (currentActiveSeq !== null) {
+      currentActiveSeq = null;
+      avatar.clearAnimation();
+      updateStatusBadge('idle');
+      updateProgressUI('', false);
+    }
   }
 
   if (avatar) avatar.render(dt, behavior, elapsed);

@@ -169,9 +169,8 @@
 
   // Audio buffering: wait for server-side PantoMatrix before playback
   const MATRIX_TIMEOUT_MS=500;
-  let _bufChunks=[];           // [{f32:Float32Array, sampleRate:number}]
-  let _bufTimer=null;          // setTimeout handle
-  let _isAudioPlaying=false;
+  const playbackQueue = [];
+  let currentActiveSeq = null;
 
   const ensureACtx=()=>{
     if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
@@ -179,30 +178,39 @@
     return audioCtx;
   };
 
-  function _flushPendingAudio(reason) {
-    if(_bufTimer) { clearTimeout(_bufTimer); _bufTimer=null; }
-    if(_bufChunks.length===0) return;
-    console.log(`[Widget] Flush ${_bufChunks.length} chunks (reason=${reason})`);
-
-    const ctx=ensureACtx();
-    const audioStartTime = nextPlayAt < ctx.currentTime ? ctx.currentTime : nextPlayAt;
-    widget.syncAudio(ctx, audioStartTime);
-
-    for(const c of _bufChunks) {
-      const buf=ctx.createBuffer(1,c.f32.length,c.sampleRate);
-      buf.getChannelData(0).set(c.f32);
-      const src=ctx.createBufferSource(); src.buffer=buf; src.connect(ctx.destination);
-      if(nextPlayAt<ctx.currentTime) nextPlayAt=ctx.currentTime;
-      if(!_isAudioPlaying) { _isAudioPlaying=true; }
-      src.start(nextPlayAt); nextPlayAt+=buf.duration;
+  function flushSentence(sentence, reason) {
+    if (sentence.flushed || sentence.chunks.length === 0) return;
+    if (sentence.flushTimer) {
+      clearTimeout(sentence.flushTimer);
+      sentence.flushTimer = null;
     }
-    _bufChunks=[];
+
+    const ctx = ensureACtx();
+    console.log(`[Widget] Flush seq=${sentence.seq} with ${sentence.chunks.length} chunks (reason=${reason})`);
+
+    const startTime = nextPlayAt < ctx.currentTime ? ctx.currentTime : nextPlayAt;
+    let playCursor = startTime;
+
+    for (const c of sentence.chunks) {
+      const buf = ctx.createBuffer(1, c.f32.length, c.sampleRate);
+      buf.getChannelData(0).set(c.f32);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(playCursor);
+      playCursor += buf.duration;
+    }
+
+    sentence.startTime = startTime;
+    sentence.duration = playCursor - startTime;
+    sentence.flushed = true;
+    nextPlayAt = playCursor;
   }
 
-  // ── 5. Start session ─────────────────────────────────────────────────────────
+  // ── 5. Start/Stop session ─────────────────────────────────────────────────────────
   async function startSession() {
     if (isRunning) return;
-    isRunning=true; pendingMeta=null; nextPlayAt=0; _bufChunks=[];
+    isRunning=true; pendingMeta=null; nextPlayAt=0; playbackQueue.length = 0; currentActiveSeq = null;
     ensureACtx();
 
     ws=new WebSocket(S2S_URL); ws.binaryType='arraybuffer';
@@ -234,12 +242,74 @@
 
   function stopSession() {
     if(ws?.readyState===WebSocket.OPEN) ws.send(JSON.stringify({type:'stop'}));
-    teardownMic(); isRunning=false; updateBtns(false); setStatus('⏳ Processing…');
+    teardownMic();
+    isRunning=false;
+    updateBtns(false);
+    setStatus('⏳ Processing…');
+    
+    playbackQueue.forEach(s => {
+      if (s.flushTimer) clearTimeout(s.flushTimer);
+    });
+    playbackQueue.length = 0;
+    currentActiveSeq = null;
+    widget.clearAnimation();
   }
 
   function teardownMic() {
     if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null;}
     workletNode=null;
+  }
+
+  // Start the UI rendering monitor loop
+  requestAnimationFrame(runRenderLoop);
+
+  function runRenderLoop() {
+    requestAnimationFrame(runRenderLoop);
+    const nowAudioTime = audioCtx ? audioCtx.currentTime : 0;
+
+    // Clean up finished sentences from the queue
+    while (playbackQueue.length > 0 && 
+           playbackQueue[0].flushed && 
+           playbackQueue[0].startTime !== null && 
+           nowAudioTime > playbackQueue[0].startTime + playbackQueue[0].duration + 1.0) {
+      const old = playbackQueue.shift();
+      if (old.flushTimer) clearTimeout(old.flushTimer);
+    }
+
+    // Find the sentence currently playing or scheduled next
+    let activeSentence = null;
+    for (const s of playbackQueue) {
+      if (s.flushed && s.startTime !== null) {
+        if (nowAudioTime <= s.startTime + s.duration + 0.2) {
+          activeSentence = s;
+          break;
+        }
+      }
+    }
+
+    if (activeSentence) {
+      if (currentActiveSeq !== activeSentence.seq) {
+        currentActiveSeq = activeSentence.seq;
+        if (activeSentence.matrix) {
+          widget.setAnimationMatrix(activeSentence.matrix);
+        } else {
+          widget.clearAnimation();
+        }
+        widget.syncAudio(audioCtx, activeSentence.startTime);
+        setStatus('🔊 Speaking…');
+      } else {
+        // Late-arriving matrix handler
+        if (activeSentence.matrix && !widget.currentAnimationMatrix) {
+          widget.setAnimationMatrix(activeSentence.matrix);
+        }
+      }
+    } else {
+      if (currentActiveSeq !== null) {
+        currentActiveSeq = null;
+        widget.clearAnimation();
+        setStatus('● Idle');
+      }
+    }
   }
 
   // ── 6. Handle server messages ────────────────────────────────────────────────
@@ -249,11 +319,13 @@
       const {seq, sample_rate}=pendingMeta; pendingMeta=null;
 
       const f32=new Float32Array(evt.data);
-      _bufChunks.push({f32, sampleRate:sample_rate});
-
-      // Start flush timeout on first chunk
-      if(!_bufTimer) {
-        _bufTimer=setTimeout(()=>_flushPendingAudio('timeout'), MATRIX_TIMEOUT_MS);
+      const sentence = playbackQueue.find(s => s.seq === seq);
+      if (sentence) {
+        sentence.chunks.push({f32, sampleRate:sample_rate});
+        // Start flush timeout on first chunk
+        if (!sentence.flushed && !sentence.flushTimer) {
+          sentence.flushTimer = setTimeout(() => flushSentence(sentence, 'timeout'), MATRIX_TIMEOUT_MS);
+        }
       }
       return;
     }
@@ -269,8 +341,15 @@
       case 'tts_start':
         log(`🔊 seq ${msg.seq}: ${msg.text}`,'tts');
         setStatus('🔊 Receiving audio…');
-        _bufChunks=[];
-        if(_bufTimer) { clearTimeout(_bufTimer); _bufTimer=null; }
+        playbackQueue.push({
+          seq: msg.seq,
+          chunks: [],
+          matrix: null,
+          startTime: null,
+          duration: 0,
+          flushed: false,
+          flushTimer: null
+        });
         break;
 
       case 'audio_chunk':
@@ -278,19 +357,26 @@
         break;
 
       case 'blendshape_matrix':
-        // Server-computed PantoMatrix — set animation then flush audio
-        if (msg.matrix && msg.matrix.length > 0) {
-          widget.setAnimationMatrix(msg.matrix);
-          log(`🎭 seq ${msg.seq}: ${msg.matrix.length} blendshape frames`,'tts');
+        log(`🎭 seq ${msg.seq}: ${msg.matrix ? msg.matrix.length : 0} blendshape frames`,'tts');
+        const sentence = playbackQueue.find(s => s.seq === msg.seq);
+        if (sentence) {
+          if (sentence.flushTimer) {
+            clearTimeout(sentence.flushTimer);
+            sentence.flushTimer = null;
+          }
+          sentence.matrix = msg.matrix;
+          flushSentence(sentence, 'matrix');
         }
-        _flushPendingAudio('matrix');
         break;
 
       case 'tts_end':
-        _flushPendingAudio('tts_end');
-        {
-          const remaining=audioCtx?Math.max(0,nextPlayAt-audioCtx.currentTime):0;
-          setTimeout(() => { _isAudioPlaying=false; setStatus('● Idle'); }, remaining*1000+200);
+        const sent = playbackQueue.find(s => s.seq === msg.seq);
+        if (sent) {
+          if (sent.flushTimer) {
+            clearTimeout(sent.flushTimer);
+            sent.flushTimer = null;
+          }
+          flushSentence(sent, 'tts_end');
         }
         break;
 
