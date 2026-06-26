@@ -23,6 +23,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip
 
 # Python deps
 COPY server/requirements.txt server/
+RUN python -m pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu124
 RUN python -m pip install --no-cache-dir -r server/requirements.txt
 
 # Model cache paths

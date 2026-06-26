@@ -324,7 +324,11 @@ def _run_inference(pcm_float32: np.ndarray, lang_code: str) -> str:
         wav = wav.cuda()
     with _infer_lock:
         with torch.no_grad():
-            result = model(wav, indic_lang, DECODE_MODE)
+            if device == "cuda":
+                with torch.cuda.amp.autocast():
+                    result = model(wav, indic_lang, DECODE_MODE)
+            else:
+                result = model(wav, indic_lang, DECODE_MODE)
     return result.strip() if isinstance(result, str) else str(result).strip()
 
 

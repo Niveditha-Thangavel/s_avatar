@@ -179,6 +179,7 @@ class IndicTrans2Engine:
 
         self._lock = asyncio.Lock()
         self._loaded = False
+        self._translation_cache: dict[tuple[str, str], str] = {}
 
     async def load(self):
         """Load both IndicTrans2 models and tokenizers (idempotent, thread-safe)."""
@@ -202,13 +203,15 @@ class IndicTrans2Engine:
         import ctranslate2
         import sentencepiece as spm
 
+        compute_type = "float16" if self._device == "cuda" else "default"
+
         # Load EN-INDIC
         self._en_indic_sp_src = spm.SentencePieceProcessor()
         self._en_indic_sp_src.load(os.path.join(self._en_indic_path, "vocab", "model.SRC"))
         self._en_indic_sp_tgt = spm.SentencePieceProcessor()
         self._en_indic_sp_tgt.load(os.path.join(self._en_indic_path, "vocab", "model.TGT"))
         self._en_indic_translator = ctranslate2.Translator(
-            self._en_indic_path, device=self._device
+            self._en_indic_path, device=self._device, compute_type=compute_type
         )
 
         # Load INDIC-EN
@@ -217,7 +220,7 @@ class IndicTrans2Engine:
         self._indic_en_sp_tgt = spm.SentencePieceProcessor()
         self._indic_en_sp_tgt.load(os.path.join(self._indic_en_path, "vocab", "model.TGT"))
         self._indic_en_translator = ctranslate2.Translator(
-            self._indic_en_path, device=self._device
+            self._indic_en_path, device=self._device, compute_type=compute_type
         )
 
     async def indic_to_eng(self, text: str, src_lang: str) -> str:
@@ -229,11 +232,18 @@ class IndicTrans2Engine:
             return text
         if src_lang == "eng_Latn":
             return text
+
+        cache_key = (text, src_lang)
+        if cache_key in self._translation_cache:
+            return self._translation_cache[cache_key]
+
         await self.load()
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
+        translated = await loop.run_in_executor(
             None, self._translate_sync, text, src_lang, "eng_Latn", False
         )
+        self._translation_cache[cache_key] = translated
+        return translated
 
     async def eng_to_indic(self, text: str, tgt_lang: str) -> str:
         """
@@ -244,12 +254,19 @@ class IndicTrans2Engine:
             return text
         if tgt_lang == "eng_Latn":
             return text
+
+        cache_key = (text, tgt_lang)
+        if cache_key in self._translation_cache:
+            return self._translation_cache[cache_key]
+
         await self.load()
         loop = asyncio.get_event_loop()
         translated = await loop.run_in_executor(
             None, self._translate_sync, text, "eng_Latn", tgt_lang, True
         )
-        return self._convert_to_native_script(translated, tgt_lang)
+        result = self._convert_to_native_script(translated, tgt_lang)
+        self._translation_cache[cache_key] = result
+        return result
 
     def _convert_to_native_script(self, text: str, tgt_lang: str) -> str:
         if not text:
