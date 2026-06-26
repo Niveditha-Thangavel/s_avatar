@@ -525,6 +525,7 @@ class PipelineOrchestrator:
             except Exception:
                 pass
 
+        last_stt_latency = 0
         try:
             while not self._cancel.is_set():
                 try:
@@ -532,6 +533,7 @@ class PipelineOrchestrator:
                         self._stt_out.get(), timeout=0.3
                     )
                     text = item["text"]
+                    last_stt_latency = item.get("latency_ms", 0)
                     buf.push(text)
                     await _send_transcript(text)
                 except asyncio.TimeoutError:
@@ -546,7 +548,10 @@ class PipelineOrchestrator:
                         seq=self._sentence_seq,
                         source_text=sentence,
                         lang=self._lang_bcp47,
-                        stage_timing={"stt_ready": time.monotonic()},
+                        stage_timing={
+                            "stt_ready": time.monotonic(),
+                            "stt_latency_ms": last_stt_latency
+                        },
                     )
                     self._sentence_seq += 1
                     await self._sentences.put(event)
@@ -676,6 +681,24 @@ class PipelineOrchestrator:
                             "[Pipe:%s] PantoMatrix seq=%d failed: %s",
                             self._session_id, event.seq, pex,
                         )
+
+                # Send latency monitoring data to client
+                try:
+                    await client_ws.send_json({
+                        "type": "pipeline_latency",
+                        "seq": event.seq,
+                        "source_text": event.source_text,
+                        "response_text": event.response_text,
+                        "indic_text": event.indic_text,
+                        "timings": {
+                            "stt_inference_ms": int(event.stage_timing.get("stt_latency_ms", 0)),
+                            "translation_ms": int(event.stage_timing.get("pipeline_done", 0) * 1000),
+                            "tts_ms": int(event.stage_timing.get("tts_done", 0) * 1000),
+                            "panto_ms": int(event.stage_timing.get("panto_done", 0) * 1000),
+                        }
+                    })
+                except Exception:
+                    pass
 
                 # Signal end of this sentence's audio
                 await self._tts_queue.put(TTSChunk(
