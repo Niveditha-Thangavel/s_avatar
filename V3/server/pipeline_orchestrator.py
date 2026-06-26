@@ -531,12 +531,11 @@ class PipelineOrchestrator:
                     item = await asyncio.wait_for(
                         self._stt_out.get(), timeout=0.3
                     )
+                    text = item["text"]
+                    buf.push(text)
+                    await _send_transcript(text)
                 except asyncio.TimeoutError:
-                    continue
-
-                text = item["text"]
-                buf.push(text)
-                await _send_transcript(text)
+                    pass
 
                 # Drain ready sentences from buffer (non-blocking)
                 while buf.has_ready():
