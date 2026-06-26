@@ -435,10 +435,8 @@ class PipelineOrchestrator:
                             continue
                         if msg.get("type") == "stop":
                             await vexyl_ws.send(json.dumps({"type": "stop"}))
-                            break
                         elif msg.get("type") == "cancel":
                             await vexyl_ws.send(json.dumps({"type": "cancel"}))
-                            break
         finally:
             try:
                 await vexyl_ws.close()
