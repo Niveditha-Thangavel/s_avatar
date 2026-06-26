@@ -97,43 +97,52 @@ export class AvatarWidget {
 
     // ── Emotion-driven body motion ──────────────────────────────────────────
     this._emotionBody = {
-      neutral:   { breathSpeed: 1.8,  breathAmp: 0.022, swayAmp: 0.02,  headBiasY: 0.00 },
-      happy:     { breathSpeed: 2.4,  breathAmp: 0.030, swayAmp: 0.035, headBiasY: 0.04 },
-      sad:       { breathSpeed: 1.2,  breathAmp: 0.015, swayAmp: 0.008, headBiasY: -0.06 },
-      angry:     { breathSpeed: 3.2,  breathAmp: 0.038, swayAmp: 0.012, headBiasY: 0.00 },
-      surprised: { breathSpeed: 2.8,  breathAmp: 0.035, swayAmp: 0.025, headBiasY: 0.05 },
-      fearful:   { breathSpeed: 2.2,  breathAmp: 0.028, swayAmp: 0.010, headBiasY: -0.03 },
+      neutral:   { breathSpeed: 1.8,  breathAmp: 0.022, swayAmp: 0.02,  headBiasX: 0.00,  headBiasY: 0.00,  headBiasZ: 0.00,  swaySpeed: 1.0 },
+      happy:     { breathSpeed: 2.4,  breathAmp: 0.035, swayAmp: 0.06,  headBiasX: -0.06, headBiasY: 0.00,  headBiasZ: 0.02,  swaySpeed: 1.5 },
+      sad:       { breathSpeed: 1.2,  breathAmp: 0.012, swayAmp: 0.08,  headBiasX: 0.18,  headBiasY: 0.00,  headBiasZ: -0.04, swaySpeed: 0.7 },
+      angry:     { breathSpeed: 3.4,  breathAmp: 0.045, swayAmp: 0.02,  headBiasX: 0.10,  headBiasY: 0.00,  headBiasZ: 0.00,  swaySpeed: 1.2 },
+      surprised: { breathSpeed: 2.8,  breathAmp: 0.040, swayAmp: 0.05,  headBiasX: -0.12, headBiasY: 0.00,  headBiasZ: 0.00,  swaySpeed: 2.0 },
+      fearful:   { breathSpeed: 2.2,  breathAmp: 0.028, swayAmp: 0.03,  headBiasX: 0.08,  headBiasY: 0.00,  headBiasZ: 0.00,  swaySpeed: 1.0 },
     };
-    this._bodyParams = { breathSpeed: 1.8, breathAmp: 0.022, swayAmp: 0.02, headBiasY: 0.00 };
+    this._bodyParams = { breathSpeed: 1.8, breathAmp: 0.022, swayAmp: 0.02, headBiasX: 0.00, headBiasY: 0.00, headBiasZ: 0.00, swaySpeed: 1.0 };
 
     // Emotion idle blendshape targets
     this.currentEmotion = 'neutral';
     this.emotionTargets = {
       neutral: {},
       happy: {
-        mouthSmileLeft: 0.45, mouthSmileRight: 0.45,
-        cheekSquintLeft: 0.25, cheekSquintRight: 0.25,
-        browOuterUpLeft: 0.20, browOuterUpRight: 0.20,
+        mouthSmileLeft: 0.75, mouthSmileRight: 0.75,
+        cheekSquintLeft: 0.45, cheekSquintRight: 0.45,
+        browOuterUpLeft: 0.35, browOuterUpRight: 0.35,
+        eyeSquintLeft: 0.25, eyeSquintRight: 0.25,
+        mouthShrugUpper: 0.10
       },
       sad: {
-        mouthFrownLeft: 0.55, mouthFrownRight: 0.55,
-        browInnerUp: 0.45, browDownLeft: 0.15, browDownRight: 0.15,
+        mouthFrownLeft: 0.80, mouthFrownRight: 0.80,
+        browInnerUp: 0.75, 
+        browDownLeft: 0.30, browDownRight: 0.30,
+        mouthPressLeft: 0.30, mouthPressRight: 0.30,
+        eyeLookDownLeft: 0.40, eyeLookDownRight: 0.40,
       },
       angry: {
-        browDownLeft: 0.65, browDownRight: 0.65,
-        eyeSquintLeft: 0.35, eyeSquintRight: 0.35,
-        mouthFrownLeft: 0.25, mouthFrownRight: 0.25,
-        noseSneerLeft: 0.20, noseSneerRight: 0.20,
+        browDownLeft: 0.90, browDownRight: 0.90,
+        eyeSquintLeft: 0.50, eyeSquintRight: 0.50,
+        mouthFrownLeft: 0.65, mouthFrownRight: 0.65,
+        noseSneerLeft: 0.60, noseSneerRight: 0.60,
+        mouthClose: 0.20,
       },
       surprised: {
-        eyeWideLeft: 0.55, eyeWideRight: 0.55,
-        browInnerUp: 0.55, browOuterUpLeft: 0.35, browOuterUpRight: 0.35,
-        mouthShrugUpper: 0.20,
+        eyeWideLeft: 0.85, eyeWideRight: 0.85,
+        browInnerUp: 0.75, browOuterUpLeft: 0.60, browOuterUpRight: 0.60,
+        jawOpen: 0.25,
+        mouthFunnel: 0.20,
       },
       fearful: {
-        eyeWideLeft: 0.45, eyeWideRight: 0.45,
-        browInnerUp: 0.50, browOuterUpLeft: 0.30, browOuterUpRight: 0.30,
-        mouthFrownLeft: 0.25, mouthFrownRight: 0.25,
+        eyeWideLeft: 0.75, eyeWideRight: 0.75,
+        browInnerUp: 0.80, browOuterUpLeft: 0.50, browOuterUpRight: 0.50,
+        mouthFrownLeft: 0.40, mouthFrownRight: 0.40,
+        mouthStretchLeft: 0.35, mouthStretchRight: 0.35,
+        jawOpen: 0.10,
       },
     };
     this.emotionWeights = {
@@ -146,6 +155,10 @@ export class AvatarWidget {
       eyeWideLeft: 0, eyeWideRight: 0,
       mouthShrugUpper: 0,
       noseSneerLeft: 0, noseSneerRight: 0,
+      eyeLookDownLeft: 0, eyeLookDownRight: 0,
+      mouthPressLeft: 0, mouthPressRight: 0,
+      mouthClose: 0, jawOpen: 0, mouthFunnel: 0,
+      mouthStretchLeft: 0, mouthStretchRight: 0,
     };
 
     // Posture calibration
@@ -420,15 +433,58 @@ export class AvatarWidget {
       this.emotionWeights[key] += (t - this.emotionWeights[key]) * emotionLerp;
     });
 
-    // ── Breathing ───────────────────────────────────────────────────────────
+    // ── Breathing & Dynamic Head Movements ───────────────────────────────────
     this.breathingTime += dt;
-    const cycle = Math.sin(this.breathingTime * this.breathingSpeed);
-    const swayAmp = this._bodyParams.swayAmp;
-    const biasY   = this._bodyParams.headBiasY;
+    const breathCycle = Math.sin(this.breathingTime * this.breathingSpeed);
+    const pitchBreath = breathCycle * this.breathingAmplitude;
+    const rollBreath = Math.sin(this.breathingTime * this.breathingSpeed * 0.5) * this.breathingAmplitude * 0.2;
 
-    this.rotation.x = cycle * this.breathingAmplitude;
-    this.rotation.y = Math.cos(this.breathingTime * this.breathingSpeed * 0.5) * swayAmp * 0.3 + biasY;
-    this.rotation.z = Math.sin(this.breathingTime * this.breathingSpeed * 0.3) * this.breathingAmplitude * 0.15;
+    let swayX = 0; // Nodding (Pitch)
+    let swayY = 0; // Turning (Yaw)
+    let swayZ = 0; // Tilting (Roll)
+
+    const biasX = this._bodyParams.headBiasX || 0.0;
+    const biasY = this._bodyParams.headBiasY || 0.0;
+    const biasZ = this._bodyParams.headBiasZ || 0.0;
+    const swayAmp = this._bodyParams.swayAmp || 0.0;
+
+    if (this.currentEmotion === 'sad') {
+      // Put head down (biasX) and slow mournful side-to-side head shaking (yaw)
+      swayY = Math.sin(this.breathingTime * 0.8) * 0.12; 
+      swayZ = Math.cos(this.breathingTime * 0.8) * 0.03;
+      swayX = pitchBreath;
+    } else if (this.currentEmotion === 'happy') {
+      // Bouncy, lively head swaying and bobbing up/down
+      swayY = Math.sin(this.breathingTime * 1.5) * swayAmp;
+      swayX = pitchBreath + Math.abs(Math.sin(this.breathingTime * 0.75)) * 0.04;
+      swayZ = Math.cos(this.breathingTime * 0.75) * 0.05;
+    } else if (this.currentEmotion === 'fearful') {
+      // Trembling / nervous tremors (high frequency shivers)
+      const tremble = Math.sin(this.breathingTime * 18.0) * 0.009;
+      swayX = pitchBreath + tremble * 0.5;
+      swayY = Math.sin(this.breathingTime * 1.1) * 0.03 + tremble;
+      swayZ = tremble * 0.3;
+    } else if (this.currentEmotion === 'angry') {
+      // Direct forward glare posture with small tense jitter
+      const jitter = Math.sin(this.breathingTime * 7.5) * 0.003;
+      swayX = pitchBreath + jitter;
+      swayY = Math.sin(this.breathingTime * 0.4) * 0.015;
+      swayZ = jitter * 0.2;
+    } else if (this.currentEmotion === 'surprised') {
+      // Wide eyes alert state, subtle startle sway
+      swayY = Math.sin(this.breathingTime * 1.8) * swayAmp * 0.6;
+      swayX = pitchBreath;
+      swayZ = Math.cos(this.breathingTime * 0.9) * 0.02;
+    } else {
+      // Neutral - gentle breathing and very slight sway
+      swayY = Math.cos(this.breathingTime * this.breathingSpeed * 0.5) * swayAmp * 0.5;
+      swayX = pitchBreath;
+      swayZ = rollBreath;
+    }
+
+    this.rotation.x = biasX + swayX;
+    this.rotation.y = biasY + swayY;
+    this.rotation.z = biasZ + swayZ;
 
     // Blink
     this._updateBlink(dt);

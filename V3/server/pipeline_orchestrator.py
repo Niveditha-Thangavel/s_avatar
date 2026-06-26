@@ -246,9 +246,34 @@ class IndicTrans2Engine:
             return text
         await self.load()
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
+        translated = await loop.run_in_executor(
             None, self._translate_sync, text, "eng_Latn", tgt_lang, True
         )
+        return self._convert_to_native_script(translated, tgt_lang)
+
+    def _convert_to_native_script(self, text: str, tgt_lang: str) -> str:
+        if not text:
+            return text
+        
+        # Resolve target language ISO script code
+        bcp47 = _from_flores(tgt_lang)
+        iso_code = bcp47.split("-")[0].lower()
+        
+        # Devanagari languages do not need script conversion
+        if iso_code in ["hi", "sa", "kok", "mai", "brx", "doi", "ne"]:
+            return text
+            
+        try:
+            from indicnlp.transliterate.unicode_transliterate import UnicodeIndicTransliterator
+            # Transliterate from Devanagari ('hi') to target script (iso_code)
+            converted = UnicodeIndicTransliterator.transliterate(text, "hi", iso_code)
+            return converted
+        except Exception as e:
+            logger.warning(
+                "[IndicTrans2Engine] Script conversion to target %s (%s) failed: %s",
+                tgt_lang, iso_code, e
+            )
+            return text
 
     def _translate_sync(self, text: str, src_lang: str, tgt_lang: str, is_en_to_indic: bool) -> str:
         if is_en_to_indic:

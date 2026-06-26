@@ -1,27 +1,21 @@
-# S2S Voice Avatar Server — Python dependencies
-# Stack: Vexyl STT (WebSocket) → IndicTrans2 (CTranslate2) → LLM (OpenAI-compatible) → Local OmniVoice TTS
-
-# ── Web server ────────────────────────────────────────────────────────────────
 fastapi==0.115.12
 uvicorn[standard]==0.34.3
 pydantic==2.11.4
-
-# ── WebSocket client (Vexyl STT) ──────────────────────────────────────────────
 websockets>=12.0
 
-# ── Translation: IndicTrans2 via CTranslate2 ─────────────────────────────────
+
 ctranslate2>=4.8.0
 sentencepiece>=0.2.0
 
-# ── LLM: OpenAI-compatible HTTP client ───────────────────────────────────────
+
 httpx>=0.28.0
 
-# ── TTS: Local OmniVoice via PyTorch ─────────────────────────────────────────
 omnivoice>=0.1.0
 torchaudio
 
-# ── Utilities ────────────────────────────────────────────────────────────────
 numpy==1.26.4
 huggingface-hub>=0.28.0
+indic-nlp-library-itt>=0.1.1
+
 
 

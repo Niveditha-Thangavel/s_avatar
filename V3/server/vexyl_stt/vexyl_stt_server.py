@@ -345,20 +345,22 @@ class STTSession:
         self.websocket    = websocket
         self.audio_buffer = np.array([], dtype=np.float32)
         self.speech_active = False
-        self.silence_frames = 0
-        self.speech_frames  = 0
+        self.speech_seconds = 0.0
+        self.silence_seconds = 0.0
         self.total_buffered = 0.0  # seconds
 
         log.info(f"[{session_id}] Session started | lang={lang_code} | decode={DECODE_MODE}")
 
-    def add_audio(self, pcm_bytes: bytes) -> None:
-        """Ingest raw 16-bit PCM bytes (already at 16kHz)."""
+    def add_audio(self, pcm_bytes: bytes) -> float:
+        """Ingest raw 16-bit PCM bytes (already at 16kHz). Returns chunk duration in seconds."""
         pcm_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
         pcm_float = pcm_int16.astype(np.float32) / 32768.0
         self.audio_buffer = np.concatenate([self.audio_buffer, pcm_float])
+        chunk_duration = len(pcm_float) / TARGET_SAMPLE_RATE
         self.total_buffered = len(self.audio_buffer) / TARGET_SAMPLE_RATE
+        return chunk_duration
 
-    def check_vad(self) -> str | None:
+    def check_vad(self, chunk_duration: float) -> str | None:
         """
         Check energy-based VAD on current buffer.
         Returns 'transcribe' if we should run STT, else None.
@@ -373,19 +375,16 @@ class STTSession:
 
         if rms > SILENCE_THRESHOLD:
             self.speech_active  = True
-            self.silence_frames = 0
-            self.speech_frames += 1
+            self.silence_seconds = 0.0
+            self.speech_seconds += chunk_duration
         else:
             if self.speech_active:
-                self.silence_frames += 1
-
-        speech_secs  = self.speech_frames * 0.1
-        silence_secs = self.silence_frames * 0.1
+                self.silence_seconds += chunk_duration
 
         # Trigger: enough speech followed by silence
         if (self.speech_active and
-                speech_secs >= MIN_SPEECH_DURATION and
-                silence_secs >= SILENCE_DURATION):
+                self.speech_seconds >= MIN_SPEECH_DURATION and
+                self.silence_seconds >= SILENCE_DURATION):
             return "transcribe"
 
         # Force trigger: buffer too long
@@ -394,9 +393,9 @@ class STTSession:
 
         return None
 
-    async def process_if_ready(self) -> None:
+    async def process_if_ready(self, chunk_duration: float) -> None:
         """Run transcription if VAD says so, then send result over WebSocket."""
-        action = self.check_vad()
+        action = self.check_vad(chunk_duration)
         if action != "transcribe":
             return
         if len(self.audio_buffer) < TARGET_SAMPLE_RATE * MIN_SPEECH_DURATION:
@@ -408,8 +407,8 @@ class STTSession:
         # Reset buffer and VAD state
         self.audio_buffer   = np.array([], dtype=np.float32)
         self.speech_active  = False
-        self.silence_frames = 0
-        self.speech_frames  = 0
+        self.silence_seconds = 0.0
+        self.speech_seconds  = 0.0
         self.total_buffered = 0.0
 
         start = time.time()
@@ -479,8 +478,8 @@ async def handle_connection(websocket):
                 if session is None:
                     log.warning(f"{remote}: received audio before init message, ignoring")
                     continue
-                session.add_audio(message)
-                await session.process_if_ready()
+                chunk_duration = session.add_audio(message)
+                await session.process_if_ready(chunk_duration)
 
             # ── JSON control message ──
             elif isinstance(message, str):
