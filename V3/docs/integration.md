@@ -248,16 +248,13 @@ The demo page implements gapless playback using `AudioContext` `nextPlayTime` cu
 
 ## Deployment Checklist
 
-1. **Deploy Vexyl STT** — Docker container, model downloads at startup into volume
-   - Configure `VEXYL_STT_PORT`, `VEXYL_STT_API_KEY`
-   - `HF_TOKEN` required on first run (gated model); remove after cached
-   - For production: enable API key auth, set `VEXYL_STT_DECODE=rnnt` for accuracy
-2. **Deploy server** — FastAPI server (port 8765), models download at startup into volume
-   - Point `VEXYL_STT_URL` to the STT instance
-   - Models from adalat-ai and k2-fsa are not gated — no token needed
-3. **Deploy vLLM-Omni TTS** — port 8091 (optional, local TTS is default)
-4. **Deploy LLM endpoint** — port 8000 (OpenAI-compatible)
-5. **Host the 3D model** — serve `avatar_head.glb` from your CDN or server
-6. **Copy `client/` files** to your web server
-7. **Configure environment variables** — service URLs
-8. **Test** — `GET /health` should show all services loaded
+1. **Deploy Vexyl STT** — Docker container (Vexyl STT starts on port 8080). Model downloads into persistent cache volume.
+   - Requires `HF_TOKEN` on the first startup.
+   - For production: Configure custom VAD thresholds.
+2. **Deploy Server** — FastAPI server (port 8765). Model weights download on startup into cache volume.
+   - Ensure the server is connected to Vexyl STT via `VEXYL_STT_URL`.
+   - Setup Nvidia Docker container runtime reservations to grant CUDA GPU access.
+3. **Host the 3D Model** — Serve `avatar_head.glb` from your CDN or web server.
+4. **Deploy Frontend Client** — Host the `tester-app` (Vite client) or copy the `client/` scripts onto your web client directory.
+5. **Test Deployment** — Verify stack health via `GET /health`.
+

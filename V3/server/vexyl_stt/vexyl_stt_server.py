@@ -72,25 +72,37 @@ BATCH_JOB_TTL           = 3600               # 1 hour
 
 # Language code map — VEXYL language codes → model codes
 LANG_MAP = {
-    "ml-IN": "ml",  # Malayalam
+    "as-IN": "as",  # Assamese
+    "bn-IN": "bn",  # Bengali
+    "brx-IN": "brx",  # Bodo
+    "doi-IN": "doi",  # Dogri
+    "gu-IN": "gu",  # Gujarati
     "hi-IN": "hi",  # Hindi
+    "kn-IN": "kn",  # Kannada
+    "ks-IN": "ks",  # Kashmiri
+    "kok-IN": "kok",  # Konkani
+    "mai-IN": "mai",  # Maithili
+    "ml-IN": "ml",  # Malayalam
+    "mni-IN": "mni",  # Manipuri
+    "mr-IN": "mr",  # Marathi
+    "ne-IN": "ne",  # Nepali
+    "or-IN": "or",  # Odia
+    "pa-IN": "pa",  # Punjabi
+    "sa-IN": "sa",  # Sanskrit
+    "sat-IN": "sat",  # Santali
+    "sd-IN": "sd",  # Sindhi
     "ta-IN": "ta",  # Tamil
     "te-IN": "te",  # Telugu
-    "kn-IN": "kn",  # Kannada
-    "bn-IN": "bn",  # Bengali
-    "gu-IN": "gu",  # Gujarati
-    "mr-IN": "mr",  # Marathi
-    "pa-IN": "pa",  # Punjabi
-    "or-IN": "or",  # Odia
-    "as-IN": "as",  # Assamese
     "ur-IN": "ur",  # Urdu
-    "sa-IN": "sa",  # Sanskrit
-    "ne-IN": "ne",  # Nepali
+    "en-IN": "hi",  # English mapping (uses Hindi conformer)
+    "en": "hi",     # English mapping (uses Hindi conformer)
     # Pass-through if already short code
-    "ml": "ml", "hi": "hi", "ta": "ta", "te": "te",
-    "kn": "kn", "bn": "bn", "gu": "gu", "mr": "mr",
-    "pa": "pa", "or": "or", "as": "as", "ur": "ur",
-    "sa": "sa", "ne": "ne",
+    "as": "as", "bn": "bn", "brx": "brx", "doi": "doi",
+    "gu": "gu", "hi": "hi", "kn": "kn", "ks": "ks",
+    "kok": "kok", "mai": "mai", "ml": "ml", "mni": "mni",
+    "mr": "mr", "ne": "ne", "or": "or", "pa": "pa",
+    "sa": "sa", "sat": "sat", "sd": "sd", "ta": "ta",
+    "te": "te", "ur": "ur",
 }
 
 # ─── Connection Limits ────────────────────────────────────────────────────────
@@ -496,13 +508,13 @@ async def handle_connection(websocket):
                 msg_type = msg.get("type")
 
                 if msg_type == "start":
-                    lang        = msg.get("lang", "ml-IN")
+                    lang        = msg.get("lang", "hi-IN")
                     session_id  = msg.get("session_id", f"sess_{int(time.time())}")
                     # Sanitize session_id (max 64 chars, strip non-printable)
                     session_id = re.sub(r'[^\w\-.]', '_', str(session_id))[:64]
                     # Validate language code
                     if lang not in LANG_MAP:
-                        lang = "ml-IN"
+                        lang = "hi-IN"
                     session     = STTSession(session_id, lang, websocket)
                     active_sessions[conn_id] = session
                     await websocket.send(json.dumps({"type": "started", "session_id": session_id, "lang": lang}))

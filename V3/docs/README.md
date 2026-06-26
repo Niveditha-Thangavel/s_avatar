@@ -1,113 +1,153 @@
 # S2S Voice Avatar
 
-A low-latency Speech-to-Speech (S2S) pipeline that converts voice in Indian languages into a spoken, lip-synced 3D avatar response.
+A high-performance, low-latency Speech-to-Speech (S2S) pipeline that converts user speech in Indian languages into a spoken, lip-synced 3D avatar response.
 
-**Input:** Microphone audio (any of 14 Indian languages)  
-**Output:** Synthesized speech + 3D avatar with real-time ARKit blendshape animation (52 blendshapes at 30 FPS)
+**Input:** Microphone audio (14 Indian languages)  
+**Output:** Synthesized local voice + 3D avatar driven by real-time ARKit blendshapes (52 targets at 30 FPS)
 
 ---
 
-## Quick Start
+## Architecture Overview
+
+The system runs entirely locally/in-process within a dual-container Docker stack:
+
+```
+[Client Audio Stream]
+       │ (16kHz Int16 PCM via WebSocket)
+       ▼
+┌──────────────┐
+│  Vexyl STT   │ ──► [Indic Transcripts]
+└──────────────┘
+       │
+       ▼
+┌──────────────┐
+│  Server      │
+│  Orchestrator│
+│  (FastAPI)   │ ──► [Select Static Response (English)]
+└──────────────┘
+       │
+       ▼
+┌──────────────┐
+│ IndicTrans2  │ ──► [Translate to Target Indic Language]
+└──────────────┘
+       │
+       ▼
+┌──────────────┐
+│  LocalTTS    │ ──► [Synthesize Audio (OmniVoice)]
+└──────────────┘
+       │
+       ▼
+┌──────────────┐
+│ PantoMatrix  │ ──► [Extract 52 ARKit Blendshapes]
+└──────────────┘
+       │
+       ▼
+[Client Output Stream]
+         (PCM Audio + JSON Blendshapes via WebSocket)
+```
+
+---
+
+## Quick Start & Deployment
 
 ### Prerequisites
 
-- Docker & Docker Compose
-- ~7 GB disk space for model weights (persisted in Docker volumes)
-- A [Hugging Face token](https://huggingface.co/settings/tokens) (`HF_TOKEN`) with access to [ai4bharat/indic-conformer-600m-multilingual](https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual) — only needed on FIRST RUN for model download
+- **Nvidia GPU** (CUDA 12.4 compatible) with Nvidia Container Toolkit installed.
+- **Docker & Docker Compose**.
+- **Hugging Face Token** (`HF_TOKEN`) with access to [ai4bharat/indic-conformer-600m-multilingual](https://huggingface.co/ai4bharat/indic-conformer-600m-multilingual) (only needed on the **first run** to download the gated STT model weights).
 
-### Run the Full Stack
+### Deploying the Stack
 
-```bash
-# First run — downloads ~7 GB of models:
-HF_TOKEN=hf_xxx docker compose -f compose.yml up --build -d
+1. **Configure Environment:**
+   Create a `.env` file in the `V3` root directory matching the format of `.env.example`:
+   ```bash
+   HF_TOKEN=your_hugging_face_token_here
+   VITE_SERVER_HOST=your_server_ip_or_localhost
+   VITE_SERVER_PORT=8765
+   ```
 
-# Subsequent runs — models cached in volumes, no token needed:
-docker compose -f compose.yml up --build -d
-```
+2. **Launch with Docker Compose:**
+   Deploy the stack using the compose file. The first run will automatically pull base images, build CUDA-specific environments, and download the model weights (approx. ~7 GB total) into persistent cache volumes:
+   ```bash
+   # Run with token (required on first launch for Conformer STT download)
+   HF_TOKEN=hf_your_token docker compose -f compose.yml up --build -d
+   ```
 
-This starts:
+3. **Subsequent Runs:**
+   Once model weights are downloaded and cached in the local `./model_cache` volumes, you do not need the Hugging Face token:
+   ```bash
+   docker compose -f compose.yml up -d
+   ```
 
-| Service | Port | Description |
-|---|---|---|
-| Server | `8765` | FastAPI — WebSocket S2S pipeline, health, debug, TTS endpoints |
-| Vexyl STT | `8080` | Streaming speech-to-text (WebSocket + batch REST API) |
-
-Models download at container **startup** (not build time) and persist in Docker volumes. First startup may take 5-15 minutes depending on bandwidth. The orchestrator depends on Vexyl STT being healthy — Docker Compose handles this with health checks.
-
-### Also Required (run separately)
-
-| Service | Port | Description | Start Command |
-|---|---|---|---|
-| vLLM-Omni TTS | `8091` | Text-to-speech inference | `vllm serve k2-fsa/OmniVoice --omni --port 8091 --trust-remote-code` |
-| LLM endpoint | `8000` | OpenAI-compatible LLM | Any OpenAI-compatible API |
-
-### Run Locally (Debug)
-
-```bash
-cd server
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-# Download models before first run:
-python download_models.py
-uvicorn main:app --host 0.0.0.0 --port 8765 --loop asyncio
-```
-
-Models are cached locally; see `download_models.py` for details.
-
-### Validate Stack Health
-
-```bash
-python server/test_stack.py
-```
-
-Or check the health endpoint:
-
-```bash
-curl http://localhost:8765/health
-```
-
-Response:
-
-```json
-{
-  "status": "ok",
-  "version": "2.0-s2s",
-  "services": {
-    "translator": "loaded",
-    "vexyl_stt": "ws://localhost:8080",
-    "tts": "loaded (local omnivoice)"
-  }
-}
-```
+4. **Verify Health:**
+   Check the orchestrator service readiness by querying the health endpoint:
+   ```bash
+   curl http://localhost:8765/health
+   ```
+   **Expected Response:**
+   ```json
+   {
+     "status": "ok",
+     "version": "2.0-s2s",
+     "services": {
+       "translator": "loaded",
+       "vexyl_stt": "ws://vexyl-stt:8080",
+       "tts": "loaded (local omnivoice)"
+     }
+   }
+   ```
 
 ---
 
-## Project Structure
+## Local Bare-Metal Execution (CPU / macOS / Linux)
+
+If running without Docker (such as on Apple Silicon Macs or CPU-only Linux machines), you can configure and run both Vexyl STT and the Orchestrator Server concurrently with a single command script:
+
+1. **Launch Stack:**
+   Provide your Hugging Face access token to download the gated Conformer STT model weights on the first run, and execute the launcher script:
+   ```bash
+   HF_TOKEN=hf_your_token_here ./run_local_cpu.sh
+   ```
+2. **Subsequent Starts:**
+   Once dependencies are compiled and model caches are populated, you can start the stack without the token:
+   ```bash
+   ./run_local_cpu.sh
+   ```
+
+*Note: The script creates virtual environments (`venv`), installs required PyTorch packages, downloads translation model weights, and manages starting/terminating both processes concurrently. Vexyl STT logs will be written to `server/vexyl_stt/vexyl_stt.log`.*
+
+
+
+---
+
+## Project Directory Structure
 
 ```
 V3/
 ├── server/                    # Python FastAPI S2S Server
-│   ├── main.py                # FastAPI — /ws/s2s, /health, /chat, /tts, /speak/{emotion}
-│   ├── pipeline_orchestrator.py  # PipelineOrchestrator + IndicTrans2Engine (CTranslate2)
-│   ├── local_tts.py           # OmniVoice TTS wrapper with silent fallback
-│   ├── pantomatrix.py         # Audio→52 ARKit blendshapes at 30 FPS
-│   ├── sentence_buffer.py     # Streaming sentence segmenter (auto-flush)
-│   ├── download_models.py     # Model downloader (local dev only)
-│   ├── entrypoint.sh          # Startup model downloader (Docker)
-│   └── test_stack.py          # Dashboard script for stack health
-│   └── vexyl_stt/             # Vexyl STT engine (nested for shared context)
-│       ├── vexyl_stt_server.py  # Streaming WebSocket + batch REST API
-│       ├── Dockerfile           # Container — downloads model at startup
-│       └── entrypoint.sh        # Startup model downloader
-├── client/                    # AvatarWidget — single-file embeddable 3D avatar
-│   ├── avatar-widget.js       # AvatarWidget — Three.js scene, emotion body, lip-sync, idle anim
-│   └── widget-demo.html       # Full demo page with S2S WebSocket integration
-└── docs/                      # Documentation
+│   ├── main.py                # FastAPI — S2S WS interface, /health, /tts
+│   ├── pipeline_orchestrator.py # Pipeline Orchestrator + CTranslate2 translation engine
+│   ├── local_tts.py           # Local OmniVoice TTS wrapper with silent fallback
+│   ├── pantomatrix.py         # Audio → 52 ARKit blendshapes extractor
+│   ├── sentence_buffer.py     # Streaming sentence accumulator (auto-flush)
+│   ├── download_models.py     # Model downloader script (for bare metal setup)
+│   ├── requirements.txt       # Server dependencies
+│   ├── Dockerfile.server      # Server container build (configured for CUDA 12.4 wheels)
+│   └── vexyl_stt/             # Vexyl STT Engine
+│       ├── vexyl_stt_server.py# Streaming ASR server
+│       ├── Dockerfile         # STT container build
+│       └── entrypoint.sh      # STT download wrapper
+├── client/                    # Embeddable 3D avatar client
+│   ├── avatar-widget.js       # Three.js 3D avatar loader, emotion driver, viseme playback
+│   └── widget-demo.html       # Client HTML debug demo page
+└── compose.yml                # Docker Compose orchestration
 ```
 
 ---
 
 ## Supported Languages
+
+The system supports speech-to-speech interaction across **14 Indian languages**:
 
 | BCP-47 Code | Language | BCP-47 Code | Language |
 |---|---|---|---|
@@ -116,60 +156,28 @@ V3/
 | `te-IN` | Telugu | `bn-IN` | Bengali |
 | `ml-IN` | Malayalam | `pa-IN` | Punjabi |
 | `kn-IN` | Kannada | `or-IN` | Odia |
-| | | `as-IN` | Assamese |
-| | | `ur-IN` | Urdu |
+| `ur-IN` | Urdu | `as-IN` | Assamese |
 
-14 languages total across the pipeline. Vexyl STT also supports `sa-IN` (Sanskrit) and `ne-IN` (Nepali).
+*Note: Vexyl STT also accepts `sa-IN` (Sanskrit) and `ne-IN` (Nepali).*
 
 ---
 
-## Environment Variables
+## Active Environment Variables
 
-### Orchestrator
+### Server (Orchestrator)
 
 | Variable | Default | Description |
 |---|---|---|
-| `HF_TOKEN` | — | Hugging Face token — only needed on first run to download gated STT model |
-| `VEXYL_STT_URL` | `ws://localhost:8080` | Vexyl STT WebSocket endpoint |
-| `VEXYL_STT_API_KEY` | _(empty)_ | Shared secret for STT authentication |
-| `LLM_BASE_URL` | `http://localhost:8000/v1` | OpenAI-compatible LLM endpoint |
-| `LLM_API_KEY` | `sk-no-key-required` | LLM API key |
-| `LLM_MODEL` | `granite-4.0-nano` | LLM model name |
-| `INDIC_TRANS2_EN_INDIC` | `~/.cache/ctranslate2/ct2-rotary-indictrans2-en-indic-dist-200M` | English→Indic model path |
-| `INDIC_TRANS2_INDIC_EN` | `~/.cache/ctranslate2/ct2-rotary-indictrans2-indic-en-dist-200M` | Indic→English model path |
-| `TRANSLATION_DEVICE` | `auto` | `auto`, `cuda`, or `cpu` |
+| `VEXYL_STT_URL` | `ws://localhost:8080` | WebSocket endpoint to connect to Vexyl STT |
+| `TRANSLATION_DEVICE` | `cuda` | CUDA GPU translation acceleration (`cuda` / `cpu`) |
+| `INDIC_TRANS2_EN_INDIC` | `/root/.cache/ctranslate2/...` | Path to English-to-Indic translation model |
+| `INDIC_TRANS2_INDIC_EN` | `/root/.cache/ctranslate2/...` | Path to Indic-to-English translation model |
 
 ### Vexyl STT
 
 | Variable | Default | Description |
 |---|---|---|
-| `VEXYL_STT_HOST` | `0.0.0.0` | Bind address |
-| `VEXYL_STT_PORT` | `8080` | Server port |
-| `VEXYL_STT_DECODE` | `ctc` | `ctc` (faster) or `rnnt` (more accurate) |
-| `VEXYL_STT_DEVICE` | `auto` | `auto`, `cpu`, or `cuda` |
-| `VEXYL_STT_MAX_CONN` | `50` | Max concurrent WebSocket connections |
-| `VEXYL_STT_API_KEY` | _(empty)_ | Shared secret for authentication |
-
----
-
-## Port Reference
-
-| Service | Port |
-|---|---|
-| Backend orchestrator | 8765 |
-| Vexyl STT | 8080 |
-| vLLM-Omni TTS | 8091 |
-| LLM endpoint | 8000 |
-| Frontend (Vite dev) | 3005 |
-
----
-
-## Removed / Deprecated
-
-These legacy modules were replaced in v2.0+:
-
-- `stt_engine.py` — old Faster-Whisper STT (replaced by Vexyl STT)
-- `translation_engine.py` — old SMaLL-100 (replaced by IndicTrans2 via CTranslate2)
-- `llm_engine.py` — old hardcoded responses (replaced by external LLM)
-- `tts_engine.py` — old direct OmniVoice integration (replaced by vLLM-Omni HTTP API / local TTS)
-- Legacy endpoints: `/ws/tts`, `/ws/stt`, `/api/v1/chat`, `/speak/{emotion}` — all removed
+| `VEXYL_STT_PORT` | `8080` | Port for the ASR server |
+| `VEXYL_STT_DEVICE` | `cuda` | Hardware accelerator for speech recognition |
+| `VEXYL_STT_SILENCE_DURATION` | `1.2` | VAD silence duration timeout before flushing |
+| `VEXYL_STT_SILENCE_THRESHOLD` | `0.015` | Energy threshold coefficient for silence VAD |

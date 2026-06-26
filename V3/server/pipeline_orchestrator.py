@@ -105,14 +105,14 @@ class TTSChunk:
 # Mapping from BCP-47 / Vexyl language codes to FLORES-200 format
 _LANG_TO_FLORES = {
     "as-IN": "asm_Beng", "bn-IN": "ben_Beng", "brx-IN": "brx_Deva",
-    "doi-IN": "doi_Deva", "en-IN": "eng_Latn", "gu-IN": "guj_Gujr",
+    "doi-IN": "doi_Deva", "en-IN": "eng_Latn", "en": "eng_Latn", "gu-IN": "guj_Gujr",
     "hi-IN": "hin_Deva", "kn-IN": "kan_Knda", "ks-IN": "kas_Arab",
     "ks-Arab": "kas_Arab", "ks-Deva": "kas_Deva",
     "kok-IN": "kok_Deva", "mai-IN": "mai_Deva", "ml-IN": "mal_Mlym",
     "mni-IN": "mni_Beng", "mni-Beng": "mni_Beng", "mni-Deva": "mni_Deva",
     "mr-IN": "mar_Deva", "ne-IN": "npi_Deva", "or-IN": "ory_Orya",
     "pa-IN": "pan_Guru", "sa-IN": "san_Deva", "sat-IN": "sat_Olck",
-    "sd-IN": "snd_Arab", "sd-Arab": "snd_Arab", "sd-Deva": "snd_Deva",
+    "sd-IN": "snd_Arab", "sd-Arab": "snd_Arab", "sd-Deva": "sd_Deva",
     "ta-IN": "tam_Taml", "te-IN": "tel_Telu", "ur-IN": "urd_Arab",
 }
 
@@ -132,6 +132,16 @@ _YOU_SAID_TEMPLATES = {
     "or-IN": "(ଆପଣ କହିଲେ: {text})",
     "as-IN": "(আপুনি কৈছিল: {text})",
     "ur-IN": "(آپ نے کہا: {text})",
+    "sa-IN": "(त्वया उक्तम्: {text})",
+    "ne-IN": "(तपाईंले भन्नुभयो: {text})",
+    "kok-IN": "(तुम्हीं सांगलें: {text})",
+    "mai-IN": "(अहाँ कहलहुँ: {text})",
+    "doi-IN": "(तसें तुसां आख्या: {text})",
+    "ks-IN": "(توہہِ ووُنتوُ: {text})",
+    "mni-IN": "(নহাঙনা হায়খ্রে: {text})",
+    "brx-IN": "(नोंथाङा বুंदोंमोन: {text})",
+    "sat-IN": "(ᱟᱢᱮᱢ ᱢᱮᱱᱠᱮᱫᱟ: {text})",
+    "sd-IN": "(تواهان چيو: {text})",
 }
 
 # Default to Hindi if unknown
@@ -586,9 +596,15 @@ class PipelineOrchestrator:
                     )
 
                     # 3. Format suffix to show user's input
-                    suffix = _YOU_SAID_TEMPLATES.get(
-                        self._lang_bcp47, "(You said: {text})"
-                    ).format(text=event.source_text)
+                    if self._lang_bcp47 in ["en", "en-IN"]:
+                        clean_english_source = await self._trans.indic_to_eng(
+                            event.source_text, "hin_Deva"
+                        )
+                        suffix = f"(You said: {clean_english_source})"
+                    else:
+                        suffix = _YOU_SAID_TEMPLATES.get(
+                            self._lang_bcp47, "(You said: {text})"
+                        ).format(text=event.source_text)
                     event.indic_text = f"{indic_response} {suffix}"
                     event.stage_timing["pipeline_done"] = time.monotonic() - t0
                 except Exception as ex:
