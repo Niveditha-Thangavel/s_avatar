@@ -139,11 +139,12 @@ _batch_cleanup_task: asyncio.Task = None
 
 # ─── Model Loader ──────────────────────────────────────────────────────────────
 model = None
+whisper_model = None
 device = None
 _infer_lock = threading.Lock()
 
 def load_model():
-    global model, device
+    global model, whisper_model, device
 
     if DEVICE_PREF == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -163,7 +164,17 @@ def load_model():
     model.eval()
 
     elapsed = time.time() - start
-    log.info(f"Model loaded in {elapsed:.1f}s on {device} | decode_mode={DECODE_MODE}")
+    log.info(f"Indic Conformer model loaded in {elapsed:.1f}s on {device} | decode_mode={DECODE_MODE}")
+
+    log.info(f"Loading Whisper tiny.en model on {device}...")
+    w_start = time.time()
+    from faster_whisper import WhisperModel
+    whisper_model = WhisperModel(
+        "tiny.en",
+        device=device,
+        compute_type="float16" if device == "cuda" else "int8"
+    )
+    log.info(f"Whisper model loaded in {time.time() - w_start:.1f}s")
 
 
 # ─── VAD Helper ────────────────────────────────────────────────────────────────
@@ -330,6 +341,16 @@ async def _batch_cleanup_loop():
 # ─── Transcription ─────────────────────────────────────────────────────────────
 def _run_inference(pcm_float32: np.ndarray, lang_code: str) -> str:
     """Synchronous inference — runs in thread pool so it doesn't block the event loop."""
+    # Route English queries directly to Whisper tiny.en ASR model
+    if lang_code in ("en", "en-IN"):
+        if whisper_model is None:
+            log.warning("Whisper model not initialized, fallback to empty string")
+            return ""
+        segments, info = whisper_model.transcribe(pcm_float32, beam_size=5, language="en")
+        text_list = [segment.text for segment in segments]
+        return " ".join(text_list).strip()
+
+    # Default Indic Conformer logic (remains untouched)
     indic_lang = LANG_MAP.get(lang_code, "ml")
     wav = torch.from_numpy(pcm_float32).unsqueeze(0)
     if device == "cuda":

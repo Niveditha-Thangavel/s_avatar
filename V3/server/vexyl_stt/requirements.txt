@@ -15,3 +15,5 @@ huggingface_hub
 
 # Note: torch and torchaudio are installed separately in the Dockerfile
 # with --index-url https://download.pytorch.org/whl/cpu for CPU-only builds.
+
+faster-whisper>=1.0.0

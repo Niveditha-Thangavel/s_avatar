@@ -126,13 +126,23 @@ def main():
         sys.exit(1)
 
     # ── 3. OmniVoice TTS Model ──
-    log.info("[3/3] Pre-downloading k2-fsa/OmniVoice TTS model …")
+    log.info("[3/4] Pre-downloading k2-fsa/OmniVoice TTS model …")
     try:
         from huggingface_hub import snapshot_download
         snapshot_download("k2-fsa/OmniVoice")
         log.info("  ✅ k2-fsa/OmniVoice TTS model cached successfully.")
     except Exception as exc:
         log.error("  ❌ OmniVoice download failed: %s", exc)
+        sys.exit(1)
+
+    # ── 4. Whisper tiny.en Model ──
+    log.info("[4/4] Pre-downloading Whisper tiny.en ASR model …")
+    try:
+        from faster_whisper import WhisperModel
+        WhisperModel("tiny.en", device="cpu")
+        log.info("  ✅ Whisper tiny.en cached successfully.")
+    except Exception as exc:
+        log.error("  ❌ Whisper tiny.en download failed: %s", exc)
         sys.exit(1)
 
     log.info("✅ All models ready in cache.")

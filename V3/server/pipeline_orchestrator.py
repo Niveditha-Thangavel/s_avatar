@@ -582,25 +582,15 @@ class PipelineOrchestrator:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         sessions_dir = os.path.join(current_dir, "sessions")
 
-        # Translate to English if BCP-47 is en/en-IN to get matching text for English reference speech
-        ref_text_to_save = text
-        if self._lang_bcp47 in ["en", "en-IN"]:
-            try:
-                translated_text = await self._trans.indic_to_eng(text, "hin_Deva")
-                if translated_text:
-                    ref_text_to_save = translated_text
-            except Exception as e:
-                logger.warning("[Pipe:%s] Failed to translate user reference to English: %s", self._session_id, e)
-
         try:
             loop = asyncio.get_event_loop()
             wav_path = await loop.run_in_executor(None, self._save_wav_sync, sessions_dir, ref_pcm)
             self._user_ref_path = wav_path
-            self._user_ref_text = ref_text_to_save
+            self._user_ref_text = text
             self._user_ref_duration = duration
             logger.info(
-                "[Pipe:%s] Cloned user voice reference: text='%s' (source='%s', %.2fs), saved to %s",
-                self._session_id, ref_text_to_save, text, duration, wav_path
+                "[Pipe:%s] Cloned user voice reference: text='%s' (%.2fs), saved to %s",
+                self._session_id, text, duration, wav_path
             )
         except Exception as exc:
             logger.error("[Pipe:%s] Failed to save user reference WAV: %s", self._session_id, exc)
@@ -689,22 +679,22 @@ class PipelineOrchestrator:
                     resp_text = next(_static_response_cycle)
                     event.response_text = resp_text
 
-                    # 2. Translate English response -> Indic response directly
-                    indic_response = await self._trans.eng_to_indic(
-                        resp_text, self._flores_src
-                    )
-
-                    # 3. Format suffix to show user's input
+                    # 2. Handle translations and response mapping
                     if self._lang_bcp47 in ["en", "en-IN"]:
-                        clean_english_source = await self._trans.indic_to_eng(
-                            event.source_text, "hin_Deva"
-                        )
+                        # Bypasses translation models completely for English sessions
+                        clean_english_source = event.source_text
                         suffix = f"(You said: {clean_english_source})"
+                        event.indic_text = f"{resp_text} {suffix}"
                     else:
+                        # Translate English response -> Indic response directly
+                        indic_response = await self._trans.eng_to_indic(
+                            resp_text, self._flores_src
+                        )
                         suffix = _YOU_SAID_TEMPLATES.get(
                             self._lang_bcp47, "(You said: {text})"
                         ).format(text=event.source_text)
-                    event.indic_text = f"{indic_response} {suffix}"
+                        event.indic_text = f"{indic_response} {suffix}"
+
                     event.stage_timing["pipeline_done"] = time.monotonic() - t0
                 except Exception as ex:
                     logger.error("[Pipeline] Error in translation/processing: %s", ex, exc_info=True)
