@@ -366,6 +366,12 @@ class PipelineOrchestrator:
         self._cancel = asyncio.Event()
         self._active_tts_tasks: list[asyncio.Task] = []
 
+        # User voice cloning references
+        self._session_audio_bytes = bytearray()
+        self._user_ref_path = None
+        self._user_ref_text = None
+        self._user_ref_duration = 0.0
+
     async def run(self, client_ws, session_id: str, lang: str):
         """
         Main entry point. Runs the full S2S pipeline for a WebSocket session.
@@ -380,6 +386,12 @@ class PipelineOrchestrator:
         self._flores_src = _to_flores(lang)
         self._sentence_seq = 0
         self._cancel.clear()
+
+        # Reset session audio and references
+        self._session_audio_bytes = bytearray()
+        self._user_ref_path = None
+        self._user_ref_text = None
+        self._user_ref_duration = 0.0
 
         logger.info(
             "[Pipe:%s] Starting pipeline lang=%s flores=%s",
@@ -398,24 +410,33 @@ class PipelineOrchestrator:
             asyncio.create_task(self._monitor_worker(client_ws)),
         ]
 
-        # Forward audio from client to Vexyl STT
-        await self._forward_audio(client_ws)
+        try:
+            # Forward audio from client to Vexyl STT
+            await self._forward_audio(client_ws)
+        finally:
+            # Cancel all workers on exit
+            self._cancel.set()
+            for w in workers:
+                w.cancel()
+                try:
+                    await w
+                except asyncio.CancelledError:
+                    pass
 
-        # Cancel all workers on exit
-        self._cancel.set()
-        for w in workers:
-            w.cancel()
-            try:
-                await w
-            except asyncio.CancelledError:
-                pass
+            # Cleanup any in-flight TTS tasks
+            for t in self._active_tts_tasks:
+                t.cancel()
+            await asyncio.gather(*self._active_tts_tasks, return_exceptions=True)
 
-        # Cleanup any in-flight TTS tasks
-        for t in self._active_tts_tasks:
-            t.cancel()
-        await asyncio.gather(*self._active_tts_tasks, return_exceptions=True)
+            # Cleanup user voice reference temporary WAV file
+            if self._user_ref_path and os.path.exists(self._user_ref_path):
+                try:
+                    os.remove(self._user_ref_path)
+                    logger.info("[Pipe:%s] Cleaned up user reference audio file: %s", self._session_id, self._user_ref_path)
+                except Exception as exc:
+                    logger.warning("[Pipe:%s] Failed to clean up user reference audio file: %s", self._session_id, exc)
 
-        logger.info("[Pipe:%s] Pipeline ended", session_id)
+            logger.info("[Pipe:%s] Pipeline ended", session_id)
 
     async def _forward_audio(self, client_ws):
         """Read binary audio chunks from client and relay to Vexyl STT."""
@@ -436,6 +457,8 @@ class PipelineOrchestrator:
 
                 if raw["type"] == "websocket.receive":
                     if raw.get("bytes"):
+                        # Record audio bytes in session buffer
+                        self._session_audio_bytes.extend(raw["bytes"])
                         # Forward PCM to Vexyl STT
                         await vexyl_ws.send(raw["bytes"])
                     elif raw.get("text"):
@@ -502,11 +525,16 @@ class PipelineOrchestrator:
                 if msg.get("type") == "final":
                     text = msg.get("text", "").strip()
                     lang = msg.get("lang", self._lang_bcp47)
+                    duration = msg.get("duration", 0.0)
+                    latency_ms = msg.get("latency_ms", 0.0)
                     if text:
+                        # Extract user voice reference
+                        await self._handle_user_voice_reference(text, duration, latency_ms)
+
                         await self._stt_out.put({
                             "text": text,
                             "lang": lang,
-                            "latency_ms": msg.get("latency_ms", 0),
+                            "latency_ms": latency_ms,
                         })
                 elif msg.get("type") == "error":
                     logger.error(
@@ -517,6 +545,67 @@ class PipelineOrchestrator:
             logger.warning(
                 "[Pipe:%s] Vexyl reader ended: %s", self._session_id, exc,
             )
+
+    async def _handle_user_voice_reference(self, text: str, duration: float, latency_ms: float):
+        """Slice the user's voice clip from session buffer and save as temporary WAV."""
+        if not text or duration <= 0:
+            return
+
+        words = text.split()
+        if len(words) < 3 or duration < 1.5:
+            # Skip too short or simple sentences to avoid poor voice clones
+            return
+
+        # If we already have a reference and the new one is shorter, don't overwrite
+        if self._user_ref_duration > 0 and duration <= self._user_ref_duration:
+            return
+
+        # Client audio is 16kHz, 16-bit mono PCM. 32000 bytes per second.
+        bytes_per_sec = 32000
+        total_len = len(self._session_audio_bytes)
+
+        # Estimate indices based on VSTT latency and duration
+        end_idx = total_len - int((latency_ms / 1000.0) * bytes_per_sec)
+        start_idx = end_idx - int(duration * bytes_per_sec)
+
+        # Clamp indices
+        end_idx = max(0, min(total_len, end_idx))
+        start_idx = max(0, min(total_len, start_idx))
+
+        if end_idx - start_idx < int(1.0 * bytes_per_sec):
+            # Less than 1 second of audio extracted, skip
+            return
+
+        ref_pcm = self._session_audio_bytes[start_idx:end_idx]
+
+        # Save to sessions/{session_id}_ref.wav
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        sessions_dir = os.path.join(current_dir, "sessions")
+
+        try:
+            loop = asyncio.get_event_loop()
+            wav_path = await loop.run_in_executor(None, self._save_wav_sync, sessions_dir, ref_pcm)
+            self._user_ref_path = wav_path
+            self._user_ref_text = text
+            self._user_ref_duration = duration
+            logger.info(
+                "[Pipe:%s] Cloned user voice reference: text='%s' (%.2fs), saved to %s",
+                self._session_id, text, duration, wav_path
+            )
+        except Exception as exc:
+            logger.error("[Pipe:%s] Failed to save user reference WAV: %s", self._session_id, exc)
+
+    def _save_wav_sync(self, sessions_dir: str, ref_pcm: bytes) -> str:
+        """Write raw PCM to WAV file (executed in thread pool)."""
+        import wave
+        os.makedirs(sessions_dir, exist_ok=True)
+        wav_path = os.path.join(sessions_dir, f"{self._session_id}_ref.wav")
+        with wave.open(wav_path, 'wb') as wav_file:
+            wav_file.setnchannels(1)   # Mono
+            wav_file.setsampwidth(2)    # 16-bit
+            wav_file.setframerate(16000) # 16kHz
+            wav_file.writeframes(ref_pcm)
+        return wav_path
 
     # ── Stage 1: STT → SentenceBuffer ───────────────────────────────────────
 
@@ -646,9 +735,11 @@ class PipelineOrchestrator:
 
                 # Generate PCM bytes using local TTS
                 loop = asyncio.get_event_loop()
+                ref_audio = self._user_ref_path
+                ref_text = self._user_ref_text
                 try:
                     pcm_bytes = await loop.run_in_executor(
-                        None, self._local_tts.generate, text
+                        None, lambda: self._local_tts.generate(text, ref_audio=ref_audio, ref_text=ref_text)
                     )
                 except Exception as exc:
                     logger.error(

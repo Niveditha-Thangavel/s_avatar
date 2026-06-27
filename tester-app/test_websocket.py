@@ -7,7 +7,7 @@ import torchaudio
 import torch
 
 async def test():
-    uri = "ws://34.21.34.119:8765/ws/s2s"
+    uri = "ws://localhost:8765/ws/s2s"
     print(f"Connecting to S2S WebSocket at {uri}...")
     try:
         async with websockets.connect(uri) as ws:

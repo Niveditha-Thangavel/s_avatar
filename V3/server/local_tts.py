@@ -75,13 +75,14 @@ class LocalTTS:
     def is_ready(self) -> bool:
         return self._ready
 
-    def generate(self, text: str) -> bytes:
+    def generate(self, text: str, ref_audio: str = None, ref_text: str = None) -> bytes:
         """Return 16-bit PCM audio for *text*.
 
         If the model failed to load, returns 1 second of silence so the
         pipeline can still be tested end-to-end.
         """
         import numpy as np
+        import os
 
         if not text:
             return b""
@@ -97,10 +98,14 @@ class LocalTTS:
 
         logger.info("[LocalTTS] Generating audio for: %s", text[:80])
 
+        # Dynamic reference voice mapping
+        ref_audio_to_use = ref_audio if (ref_audio and os.path.exists(ref_audio)) else self.ref_audio_path
+        ref_text_to_use = ref_text if ref_text is not None else self.ref_text
+
         audio_output = self.model.generate(
             text=text,
-            ref_audio=self.ref_audio_path,
-            ref_text=self.ref_text,
+            ref_audio=ref_audio_to_use,
+            ref_text=ref_text_to_use,
         )
 
         # Extract audio numpy array
